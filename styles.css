@@ -179,3 +179,13 @@ input[type="checkbox"]{accent-color: var(--blue)}
   font-size:.9em;
   padding: 10px 4px 24px 4px;
 }
+
+/* About modal */
+.modal{position:fixed; inset:0; display:none; align-items:center; justify-content:center; background:rgba(2,6,23,.65); z-index:99999; padding:18px;}
+.modal.show{display:flex;}
+.modal-card{width:min(820px, 96vw); max-height:88vh; overflow:auto; background:rgba(15,23,42,.92); border:1px solid rgba(148,163,184,.22); border-radius:18px; box-shadow:0 24px 80px rgba(0,0,0,.45);}
+.modal-head{display:flex; align-items:center; justify-content:space-between; padding:14px 16px; border-bottom:1px solid rgba(148,163,184,.18);}
+.modal-title{font-weight:800;}
+.modal-body{padding:14px 16px; line-height:1.5;}
+.modal-body ul{margin:10px 0 0 18px;}
+.modal-foot{display:flex; justify-content:flex-end; gap:10px; padding:14px 16px; border-top:1px solid rgba(148,163,184,.18);}

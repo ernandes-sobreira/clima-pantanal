@@ -25,6 +25,7 @@
         <input id="fontScale" type="range" min="100" max="140" step="5" value="110"/>
         <span id="fontScaleVal">110%</span>
       </div>
+      <button id="btnAbout" class="btn ghost">Sobre</button>
       <button id="btnShare" class="btn ghost">Compartilhar</button>
       <button id="btnExport" class="btn primary">Exportar CSV</button>
     </div>
@@ -201,5 +202,28 @@
   </main>
 
   <script src="./app.js"></script>
+
+  <div class="modal" id="aboutModal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+      <div class="modal-head">
+        <div class="modal-title" id="aboutTitle">Sobre a plataforma</div>
+        <button class="btn ghost" id="btnAboutClose" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <p><strong>Pantanal Clima</strong> é uma plataforma interativa para visualização e análise de séries climáticas dos municípios do Pantanal (planalto e planície), com foco em ensino, pesquisa, extensão, inovação e consulta pública.</p>
+        <ul>
+          <li><strong>Autor e curadoria dos dados:</strong> Ernandes Sobreira (UNEMAT)</li>
+          <li><strong>Origem:</strong> dados climáticos derivados via <em>Google Earth Engine</em> a partir de produtos de reanálise/satélite (ex.: precipitação, temperatura, umidade e índice de calor).</li>
+          <li><strong>Recorte:</strong> séries mensais por município (2001–2024, conforme disponível).</li>
+          <li><strong>Análises:</strong> resumo estatístico, correlações e tendência robusta (Mann–Kendall + inclinação de Sen).</li>
+        </ul>
+        <p class="small muted">Observação: esta plataforma roda 100% no navegador (GitHub Pages). Resultados são exploratórios e devem ser interpretados com contexto climatológico e validação adicional quando aplicável.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn primary" id="btnAboutOk">Entendi</button>
+      </div>
+    </div>
+  </div>
+
 </body>
 </html>

@@ -797,7 +797,7 @@ function renderCompare(rows, agg){
     for(const r of rows){
       if (!set.has(r.NM_MUN)) continue;
       if (!by.has(r.NM_MUN)) by.set(r.NM_MUN, []);
-      const v = r[state.v];
+      const v = r[yk];
       if (Number.isFinite(v)) by.get(r.NM_MUN).push(v);
     }
     const colors = ["#60a5fa","#34d399","#fbbf24","#fb7185","#a78bfa","#38bdf8","#f97316","#e879f9","#84cc16","#06b6d4","#f43f5e","#22c55e"];
@@ -817,7 +817,7 @@ function renderCompare(rows, agg){
     }
     layout.title.text = "Boxplot por município";
     layout.xaxis.title = "";
-    layout.yaxis.title = (VARS.find(v=>v.key===state.v)?.label || state.v);
+    layout.yaxis.title = (VARS.find(v=>v.key===yk)?.label || yk);
     layout.margin.l=80;
     Plotly.react("cmpChart", traces, layout, {displaylogo:false, responsive:true});
     statsEl.textContent = `Boxplot (${groups.length} municípios) · outliers: ${state.cmp.noOut? "ocultos":"mostrados"}`;
