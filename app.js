@@ -1,901 +1,961 @@
-
-/* Pantanal Clima — app.js
-   Tudo roda client-side (GitHub Pages). CSV em /data/pantanal_clima_utf8.csv
+/* Pantanal Clima — v3
+   - Modos: Visualização | Comparação (configurável) | Agregado
+   - Séries + MK/Sen + Boxplot + Dispersão + Matriz
 */
-
-const DATA_URL = "data/pantanal_clima_utf8.csv";
-
-const el = (id) => document.getElementById(id);
-const toast = (msg) => {
-  const t = el("toast");
-  t.textContent = msg;
-  t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 1600);
-};
-
-
-function setFontScale(pct){
-  const scale = Math.max(80, Math.min(150, Number(pct)||100)) / 100;
-  document.documentElement.style.setProperty('--fsScale', String(scale));
-}
-function getFontScale(){
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--fsScale').trim();
-  const n = Number(v);
-  return Number.isFinite(n) && n>0 ? n : 1;
-}
-
-let RAW = [];
-let META = { years: [], muns: [], vars: [] };
-let SCOPE = "mun";
+const DATA_URL = "./data/clima_pantanal.csv";
 
 const VARS = [
-  { key:"precip_sum_mm", label:"Precipitação (soma, mm)" },
-  { key:"tmean_c", label:"Temperatura média (°C)" },
-  { key:"tmin_c", label:"Temperatura mínima (°C)" },
-  { key:"tmax_c", label:"Temperatura máxima (°C)" },
-  { key:"rh_mean_pct", label:"Umidade relativa média (%)" },
-  { key:"hi_mean_c", label:"Índice de calor médio (°C)" },
-  { key:"hi_max_c", label:"Índice de calor máximo (°C)" },
+  {key:"tmean_c", label:"Temperatura média (°C)", kind:"mean", unit:"°C"},
+  {key:"tmax_c", label:"Temperatura máxima (°C)", kind:"mean", unit:"°C"},
+  {key:"tmin_c", label:"Temperatura mínima (°C)", kind:"mean", unit:"°C"},
+  {key:"precip_sum_mm", label:"Precipitação (soma, mm)", kind:"sum", unit:"mm"},
+  {key:"rh_mean_pct", label:"Umidade relativa média (%)", kind:"mean", unit:"%"},
+  {key:"hi_mean_c", label:"Heat Index médio (°C)", kind:"mean", unit:"°C"},
+  {key:"hi_max_c", label:"Heat Index máximo (°C)", kind:"mean", unit:"°C"},
 ];
 
-function fmt(x, d=2){
-  if (x === null || x === undefined || Number.isNaN(x)) return "—";
-  const abs = Math.abs(x);
-  if (abs !== 0 && (abs >= 1e6 || abs < 1e-3)) return x.toExponential(2);
-  return Number(x).toFixed(d);
-}
+const $ = (id)=>document.getElementById(id);
 
-function parseNumber(v){
-  if (v === null || v === undefined) return NaN;
-  const n = Number(String(v).trim());
-  return Number.isFinite(n) ? n : NaN;
-}
+let RAW = [];
+let META = {years:[], muns:[], locs:[]};
+let state = {
+  mode:"view", // view | compare | aggregate
+  mun:[],
+  loc:[],
+  v:"tmean_c",
+  agg:"monthly",
+  start:2001,
+  end:2024,
+  smooth:3,
+  show:{mean:true,min:true,max:true,minmax:true,std:false,mk:true},
+  compareMax:5,
+  cmp:{x:"precip_sum_mm", y:"tmean_c", type:"scatter", corr:"pearson", noOut:true},
+  font:110
+};
 
-function parseYM(ym){
-  // ym = "YYYY-MM"
-  const [y,m] = ym.split("-").map(x => parseInt(x,10));
-  return { y, m, t: new Date(Date.UTC(y, m-1, 1)) };
+function clamp(n,a,b){ return Math.max(a, Math.min(b,n)); }
+function fmt(n, d=2){
+  if (n===null || n===undefined || Number.isNaN(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs>=1000) return n.toFixed(1);
+  if (abs>=100) return n.toFixed(2);
+  if (abs>=10) return n.toFixed(2);
+  return n.toFixed(d);
 }
+function parseYM(s){ // "YYYY-MM"
+  const [y,m]=s.split("-").map(Number);
+  return new Date(y, m-1, 1);
+}
+function ymKey(d){ return d.toISOString().slice(0,7); }
 
-function movingAverage(arr, k){
-  if (!k || k<=1) return arr.slice();
+function movingAverage(arr, win){
+  if (!win || win<=1) return arr.slice();
   const out = [];
+  let sum=0;
+  const q=[];
   for (let i=0;i<arr.length;i++){
-    const a = Math.max(0, i-k+1);
-    const slice = arr.slice(a, i+1).filter(v => Number.isFinite(v));
-    out.push(slice.length ? slice.reduce((s,v)=>s+v,0)/slice.length : NaN);
+    const v=arr[i];
+    q.push(v); sum+=v;
+    if (q.length>win) sum-=q.shift();
+    out.push(sum/q.length);
   }
   return out;
 }
 
-/* ========= Robust trend: Mann–Kendall + Sen slope ========= */
-
-function mannKendall(x){
-  // Returns tau, z, p (two-sided), S, varS
-  const n = x.length;
-  let S = 0;
-  for (let i=0;i<n-1;i++){
-    for (let j=i+1;j<n;j++){
-      const a=x[i], b=x[j];
-      if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-      if (b>a) S += 1;
-      else if (b<a) S -= 1;
+// ---------- Robust trend: Mann-Kendall + Sen slope ----------
+function mannKendall(y){
+  // y array of numbers (no nulls)
+  const n=y.length;
+  let S=0;
+  for(let i=0;i<n-1;i++){
+    for(let j=i+1;j<n;j++){
+      const d=y[j]-y[i];
+      if (d>0) S+=1;
+      else if (d<0) S-=1;
     }
   }
-  // Ties correction
-  const vals = x.filter(Number.isFinite).slice().sort((a,b)=>a-b);
-  let ties = [];
-  let run = 1;
-  for (let i=1;i<vals.length;i++){
-    if (vals[i] === vals[i-1]) run++;
-    else { if (run>1) ties.push(run); run=1; }
+  // tie correction
+  const ties = new Map();
+  for(const v of y){
+    const k = v.toFixed(6);
+    ties.set(k, (ties.get(k)||0)+1);
   }
-  if (run>1) ties.push(run);
-
-  const nn = vals.length;
-  const varS = (() => {
-    if (nn < 2) return NaN;
-    let v = nn*(nn-1)*(2*nn+5);
-    if (ties.length){
-      let tSum = 0;
-      for (const t of ties){
-        tSum += t*(t-1)*(2*t+5);
-      }
-      v -= tSum;
-    }
-    return v/18.0;
-  })();
-
-  let z = 0;
-  if (Number.isFinite(varS) && varS>0){
-    if (S > 0) z = (S - 1)/Math.sqrt(varS);
-    else if (S < 0) z = (S + 1)/Math.sqrt(varS);
-    else z = 0;
-  } else {
-    z = NaN;
+  let varS = n*(n-1)*(2*n+5);
+  let tieSum=0;
+  for(const c of ties.values()){
+    if (c>1) tieSum += c*(c-1)*(2*c+5);
   }
-
-  const p = Number.isFinite(z) ? 2*(1 - normalCdf(Math.abs(z))) : NaN;
-  const tau = (nn>1) ? S / (0.5*nn*(nn-1)) : NaN;
-  return { tau, z, p, S, varS, n: nn };
+  varS = (varS - tieSum) / 18;
+  const sd = Math.sqrt(varS);
+  let z=0;
+  if (S>0) z = (S-1)/sd;
+  else if (S<0) z = (S+1)/sd;
+  else z=0;
+  // normal approx p-value (two-sided)
+  const p = 2*(1 - normCdf(Math.abs(z)));
+  const tau = S / (0.5*n*(n-1));
+  return {n,S,tau,z,p};
 }
-
-function senSlope(t, x){
-  // Median of slopes between all pairs (i<j): (xj-xi)/(tj-ti)
-  const slopes = [];
-  for (let i=0;i<x.length-1;i++){
-    for (let j=i+1;j<x.length;j++){
-      const xi=x[i], xj=x[j];
-      if (!Number.isFinite(xi) || !Number.isFinite(xj)) continue;
-      const dt = (t[j]-t[i]);
-      if (dt===0) continue;
-      slopes.push((xj-xi)/dt);
+function normCdf(z){
+  // Abramowitz-Stegun approximation
+  const t = 1/(1+0.2316419*z);
+  const d = 0.3989423*Math.exp(-z*z/2);
+  const prob = d*t*(0.3193815 + t*(-0.3565638 + t*(1.781478 + t*(-1.821256 + t*1.330274))));
+  return 1 - prob;
+}
+function senSlope(y, x){
+  // x as numeric (e.g., year fraction). robust median slope
+  const n=y.length;
+  const slopes=[];
+  for(let i=0;i<n-1;i++){
+    for(let j=i+1;j<n;j++){
+      const dx = x[j]-x[i];
+      if (dx!==0) slopes.push((y[j]-y[i])/dx);
     }
   }
   slopes.sort((a,b)=>a-b);
-  if (!slopes.length) return NaN;
   const mid = Math.floor(slopes.length/2);
-  return slopes.length%2 ? slopes[mid] : (slopes[mid-1]+slopes[mid])/2;
+  const slope = slopes.length%2? slopes[mid] : (slopes[mid-1]+slopes[mid])/2;
+  return slope;
 }
 
-// Normal CDF via erf approximation
-function erf(x){
-  // Abramowitz & Stegun approximation
-  const sign = x >= 0 ? 1 : -1;
-  x = Math.abs(x);
-  const a1=0.254829592, a2=-0.284496736, a3=1.421413741, a4=-1.453152027, a5=1.061405429;
-  const p=0.3275911;
-  const t=1/(1+p*x);
-  const y=1-((((a5*t+a4)*t+a3)*t+a2)*t+a1)*t*Math.exp(-x*x);
-  return sign*y;
-}
-function normalCdf(z){ return 0.5*(1+erf(z/Math.SQRT2)); }
-
-/* ========= Regression / Correlation ========= */
-
-function linReg(x, y){
-  // returns slope, intercept, r2
-  const pts = [];
-  for (let i=0;i<x.length;i++){
-    if (Number.isFinite(x[i]) && Number.isFinite(y[i])) pts.push([x[i], y[i]]);
+function linreg(x,y){
+  const n=x.length;
+  const mx=x.reduce((a,b)=>a+b,0)/n;
+  const my=y.reduce((a,b)=>a+b,0)/n;
+  let num=0, den=0, ssTot=0, ssRes=0;
+  for(let i=0;i<n;i++){
+    num += (x[i]-mx)*(y[i]-my);
+    den += (x[i]-mx)*(x[i]-mx);
   }
-  const n = pts.length;
-  if (n < 2) return { slope: NaN, intercept: NaN, r2: NaN, n };
-  const xs = pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
-  const mx = xs.reduce((s,v)=>s+v,0)/n;
-  const my = ys.reduce((s,v)=>s+v,0)/n;
-  let num=0, den=0;
-  for (let i=0;i<n;i++){
-    num += (xs[i]-mx)*(ys[i]-my);
-    den += (xs[i]-mx)*(xs[i]-mx);
-  }
-  const slope = den===0 ? NaN : num/den;
+  const slope = den===0?0:num/den;
   const intercept = my - slope*mx;
-  // r2
-  let ssTot=0, ssRes=0;
-  for (let i=0;i<n;i++){
-    const yhat = intercept + slope*xs[i];
-    ssTot += (ys[i]-my)*(ys[i]-my);
-    ssRes += (ys[i]-yhat)*(ys[i]-yhat);
+  for(let i=0;i<n;i++){
+    const yhat = intercept + slope*x[i];
+    ssTot += (y[i]-my)**2;
+    ssRes += (y[i]-yhat)**2;
   }
-  const r2 = ssTot===0 ? NaN : 1 - ssRes/ssTot;
-  return { slope, intercept, r2, n };
+  const r2 = ssTot===0?0:1-ssRes/ssTot;
+  return {slope, intercept, r2};
 }
 
-function pearson(x,y){
-  const pts=[];
-  for (let i=0;i<x.length;i++){
-    if (Number.isFinite(x[i]) && Number.isFinite(y[i])) pts.push([x[i],y[i]]);
-  }
-  const n=pts.length;
-  if (n<2) return { r: NaN, n };
-  const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
-  const mx=xs.reduce((s,v)=>s+v,0)/n, my=ys.reduce((s,v)=>s+v,0)/n;
-  let num=0, dx=0, dy=0;
-  for (let i=0;i<n;i++){
-    const a=xs[i]-mx, b=ys[i]-my;
-    num += a*b; dx += a*a; dy += b*b;
-  }
-  const r = (dx===0 || dy===0) ? NaN : num/Math.sqrt(dx*dy);
-  return { r, n };
-}
-
-function rank(arr){
-  // average ranks for ties
-  const indexed = arr.map((v,i)=>({v,i})).filter(o=>Number.isFinite(o.v));
-  indexed.sort((a,b)=>a.v-b.v);
-  const ranks = new Array(arr.length).fill(NaN);
-  let i=0;
-  while (i<indexed.length){
-    let j=i;
-    while (j+1<indexed.length && indexed[j+1].v===indexed[i].v) j++;
-    const r = (i+j)/2 + 1;
-    for (let k=i;k<=j;k++) ranks[indexed[k].i]=r;
-    i=j+1;
-  }
-  return ranks;
-}
-
-function spearman(x,y){
-  const rx=rank(x), ry=rank(y);
-  return pearson(rx,ry);
-}
-
-/* ========= Data shaping ========= */
-
-function unique(arr){ return Array.from(new Set(arr)); }
-
-function getSelections(){
-  const mun = Array.from(el("selMun").selectedOptions).map(o=>o.value);
-  const loc = Array.from(el("selLoc").selectedOptions).map(o=>o.value);
-  const v = el("selVar").value;
-  const agg = el("selAgg").value;
-  const start = parseInt(el("selStart").value,10);
-  const end = parseInt(el("selEnd").value,10);
-  const smooth = el("selSmooth").value;
-  const bands = {
-    minmax: el("chkMinMax").checked,
-    std: el("chkStd").checked,
-    mean: el("chkMeanLine").checked,
-    maxLine: el("chkMaxLine")?.checked || false,
-    minLine: el("chkMinLine")?.checked || false,
-    annotMK: el("chkAnnotMK")?.checked || false,
-  };
-  return { mun, loc, v, agg, start, end, smooth, bands };
-}
-
-function filterRaw(sel){
-  return RAW.filter(r => {
-    if (r.year < sel.start || r.year > sel.end) return false;
-    if (SCOPE === "loc"){
-      return sel.loc.length ? sel.loc.includes(r.LOCATION) : true;
-    }
-    // mun/agg scopes
-    return sel.mun.length ? sel.mun.includes(r.NM_MUN) : true;
-  });
-}
-
-function groupMonthly(rows, varKey){
-  // group by ym (date). Each ym returns stats over selected units (mun or loc)
-  const m = new Map();
-  for (const r of rows){
-    const key = r.ym;
-    const v = r[varKey];
-    if (!Number.isFinite(v)) continue;
-    if (!m.has(key)) m.set(key, []);
-    m.get(key).push(v);
-  }
-  const out = [];
-  for (const [ym, vals] of m){
-    vals.sort((a,b)=>a-b);
-    const n=vals.length;
-    const mean=vals.reduce((s,v)=>s+v,0)/n;
-    const min=vals[0], max=vals[n-1];
-    const med = vals[Math.floor(n/2)];
-    const sd = Math.sqrt(vals.reduce((s,v)=>s+(v-mean)*(v-mean),0)/Math.max(1,n-1));
-    out.push({ ym, ...parseYM(ym), n, mean, min, max, sd, med });
-  }
-  out.sort((a,b)=>a.t-b.t);
-  return out;
-}
-
-function groupAnnual(rows, varKey){
-  const m = new Map();
-  for (const r of rows){
-    const y = r.year;
-    const v = r[varKey];
-    if (!Number.isFinite(v)) continue;
-    if (!m.has(y)) m.set(y, []);
-    m.get(y).push(v);
-  }
-  const out=[];
-  for (const [year, vals] of m){
-    vals.sort((a,b)=>a-b);
-    const n=vals.length;
-    const mean=vals.reduce((s,v)=>s+v,0)/n;
-    const min=vals[0], max=vals[n-1];
-    const med = vals[Math.floor(n/2)];
-    const sd = Math.sqrt(vals.reduce((s,v)=>s+(v-mean)*(v-mean),0)/Math.max(1,n-1));
-    out.push({ year, t: new Date(Date.UTC(year,0,1)), n, mean, min, max, sd, med });
-  }
-  out.sort((a,b)=>a.year-b.year);
-  return out;
-}
-
-function selectionSeries(rows, varKey, agg){
-  if (agg === "annual") return groupAnnual(rows, varKey);
-  return groupMonthly(rows, varKey);
-}
-
-function summarize(y){
-  const vals = y.filter(Number.isFinite).slice().sort((a,b)=>a-b);
-  const n=vals.length;
-  if (!n) return null;
-  const mean = vals.reduce((s,v)=>s+v,0)/n;
-  const med = vals[Math.floor(n/2)];
-  const sd = Math.sqrt(vals.reduce((s,v)=>s+(v-mean)*(v-mean),0)/Math.max(1,n-1));
-  const q = (p) => vals[Math.floor((n-1)*p)];
-  return {
-    n, mean, med, sd,
-    min: vals[0], max: vals[n-1],
-    p05: q(0.05), p25: q(0.25), p75: q(0.75), p95: q(0.95)
-  };
-}
-
-/* ========= Charts ========= */
-
-
-function plotTimeSeries(seriesAgg, sel, varLabel, extra){
-  const scale = getFontScale();
-  const bands = sel.bands || {};
-  const groups = (extra && extra.groups) ? extra.groups : null;
-  const mk = (extra && extra.mk) ? extra.mk : null;
-  const sen = (extra && extra.sen) ? extra.sen : null;
-
-  const x = seriesAgg.map(d=>d.t);
-  let yMean = seriesAgg.map(d=>d.mean);
-  let yMin  = seriesAgg.map(d=>d.min);
-  let yMax  = seriesAgg.map(d=>d.max);
-
-  const k = sel.smooth === "none" ? 1 : parseInt(sel.smooth,10);
-  if (k>1){
-    yMean = movingAverage(yMean, k);
-    yMin  = movingAverage(yMin,  k);
-    yMax  = movingAverage(yMax,  k);
-  }
-
-  const traces = [];
-  const layout = {
-    margin:{l:60,r:18,t:36,b:52},
-    paper_bgcolor:"rgba(0,0,0,0)",
-    plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:"#e6edf7", size: Math.round(12*scale)},
-    xaxis:{title:"Tempo", gridcolor:"rgba(255,255,255,.07)", tickfont:{size:Math.round(11*scale)}, titlefont:{size:Math.round(12*scale)}},
-    yaxis:{title:varLabel, gridcolor:"rgba(255,255,255,.07)", tickfont:{size:Math.round(11*scale)}, titlefont:{size:Math.round(12*scale)}},
-    legend:{orientation:"h", y:1.18, font:{size:Math.round(11*scale)}},
-    annotations:[]
-  };
-
-  // Individual lines (municipalities or locations)
-  if (groups && groups.length){
-    const maxLines = 12;
-    const show = groups.slice(0, maxLines);
-    if (groups.length > maxLines) toast(`Mostrando ${maxLines} séries individuais (de ${groups.length}).`);
-    for (const g of show){
-      const gx = g.series.map(d=>d.t);
-      let gy = g.series.map(d=>d.mean);
-      if (k>1) gy = movingAverage(gy, k);
-      traces.push({
-        x: gx, y: gy,
-        mode:"lines",
-        name: g.name,
-        line:{width:1.6},
-        opacity:0.65,
-        hovertemplate:`%{x|%Y-%m}: %{y:.2f}<extra>${g.name}</extra>`
-      });
-    }
-  }
-
-  // Bands (selection)
-  if (bands.minmax){
-    traces.push({ x, y:yMax, mode:"lines", line:{width:0.6}, showlegend:false, hoverinfo:"skip" });
-    traces.push({ x, y:yMin, mode:"lines", line:{width:0.6}, fill:"tonexty", fillcolor:"rgba(125,211,252,.12)", showlegend:false, hoverinfo:"skip" });
-  }
-
-  if (bands.std){
-    const ySd = seriesAgg.map(d=>d.sd);
-    let yU = yMean.map((v,i)=> (Number.isFinite(v)&&Number.isFinite(ySd[i])) ? v+ySd[i] : null);
-    let yL = yMean.map((v,i)=> (Number.isFinite(v)&&Number.isFinite(ySd[i])) ? v-ySd[i] : null);
-    if (k>1){
-      yU = movingAverage(yU, k);
-      yL = movingAverage(yL, k);
-    }
-    traces.push({ x, y:yU, mode:"lines", line:{width:0.6}, showlegend:false, hoverinfo:"skip" });
-    traces.push({ x, y:yL, mode:"lines", line:{width:0.6}, fill:"tonexty", fillcolor:"rgba(34,197,94,.10)", showlegend:false, hoverinfo:"skip" });
-  }
-
-  // Main selection line
-  traces.push({
-    x, y: yMean,
-    mode:"lines",
-    name: (SCOPE==="mun" && sel.mun.length===1) ? sel.mun[0] : "média (seleção)",
-    line:{width:3.2},
-    hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra></extra>"
-  });
-
-  // Optional selection lines
-  if (bands.maxLine){
-    traces.push({ x, y:yMax, mode:"lines", name:"linha máx (sel)", line:{width:2, dash:"dot"}, hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra>máx</extra>" });
-  }
-  if (bands.minLine){
-    traces.push({ x, y:yMin, mode:"lines", name:"linha mín (sel)", line:{width:2, dash:"dot"}, hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra>mín</extra>" });
-  }
-
-  // MK annotation
-  if (bands.annotMK && mk && mk.n>=8){
-    const ptxt = (mk.p < 0.001) ? "<0.001" : mk.p.toFixed(3);
-    const senTxt = (sen && Number.isFinite(sen)) ? ` · Sen=${sen.toFixed(4)}/ano` : "";
-    layout.annotations.push({
-      xref:"paper", yref:"paper",
-      x:0.01, y:1.12,
-      text:`MK: tau=${mk.tau.toFixed(2)} · p=${ptxt}${senTxt}`,
-      showarrow:false,
-      font:{size:Math.round(12*scale), color:"#e6edf7"},
-      bgcolor:"rgba(0,0,0,.25)",
-      bordercolor:"rgba(255,255,255,.10)",
-      borderwidth:1,
-      borderpad:6
-    });
-  }
-
-  Plotly.newPlot("chartTS", traces, layout, {displayModeBar:true, responsive:true});
-}
-
-
-
-function plotCompare(sel, rows){
-  const scale = getFontScale();
-  const xKey = el("selX").value;
-  const yKey = el("selY").value;
-  const cmpType = el("selCmp").value;
-  const corrType = el("selCorr").value;
-  const noOut = el("chkNoOutliers")?.checked ?? true;
-
-  // BOX: compare municipalities (or locations) for current variable (sel.v)
-  if (cmpType === "box"){
-    const vKey = sel.v;
-    const vLab = VARS.find(v=>v.key===vKey)?.label || vKey;
-
-    let groupNames = [];
-    let field = "NM_MUN";
-    if (SCOPE === "loc"){
-      field = "LOCATION";
-      groupNames = sel.loc.length ? sel.loc.slice() : unique(rows.map(r=>r.LOCATION));
-    } else {
-      groupNames = sel.mun.length ? sel.mun.slice() : unique(rows.map(r=>r.NM_MUN));
-    }
-    groupNames = groupNames.filter(Boolean);
-
-    const traces = [];
-    for (const g of groupNames){
-      const sub = rows.filter(r => (r[field]===g));
-      const s = selectionSeries(sub, vKey, sel.agg);
-      const vals = s.map(d=>d.mean).filter(Number.isFinite);
-      if (!vals.length) continue;
-      traces.push({
-        type:"box",
-        name:g,
-        y: vals,
-        boxpoints: noOut ? false : "outliers",
-        jitter: 0,
-        hovertemplate:`${g}<br>%{y:.2f}<extra></extra>`
-      });
-    }
-
-    const layout = {
-      margin:{l:60,r:18,t:36,b:90},
-      paper_bgcolor:"rgba(0,0,0,0)",
-      plot_bgcolor:"rgba(0,0,0,0)",
-      font:{color:"#e6edf7", size:Math.round(12*scale)},
-      xaxis:{title:"Grupo", tickangle:-30, gridcolor:"rgba(255,255,255,.07)", tickfont:{size:Math.round(10*scale)}},
-      yaxis:{title:vLab, gridcolor:"rgba(255,255,255,.07)"},
-      showlegend:false
-    };
-
-    Plotly.newPlot("chartCMP", traces, layout, {displayModeBar:true, responsive:true});
-    el("boxCmpStats").innerHTML = `Boxplot de <b>${vLab}</b> (${sel.agg === "annual" ? "anual" : "mensal"}).`;
-    return;
-  }
-
-  // selection aggregate series
-  const sX = selectionSeries(rows, xKey, sel.agg);
-  const sY = selectionSeries(rows, yKey, sel.agg);
-
-  const mapY = new Map(sY.map(d => [d.t.getTime(), d.mean]));
-  const xsAgg=[], ysAgg=[];
-  for (const d of sX){
-    const k = d.t.getTime();
-    const yv = mapY.get(k);
-    if (Number.isFinite(d.mean) && Number.isFinite(yv)){
-      xsAgg.push(d.mean); ysAgg.push(yv);
-    }
-  }
-
-  const traces = [];
-  let xsAll=[], ysAll=[];
-  const manyMun = (SCOPE==="mun" && sel.mun.length>1);
-
-  if (cmpType === "scatter" && manyMun){
-    for (const m of sel.mun){
-      const sub = rows.filter(r=>r.NM_MUN===m);
-      const mx = selectionSeries(sub, xKey, sel.agg);
-      const my = selectionSeries(sub, yKey, sel.agg);
-      const myMap = new Map(my.map(d=>[d.t.getTime(), d.mean]));
-      const xs=[], ys=[];
-      for (const d of mx){
-        const k=d.t.getTime();
-        const yv=myMap.get(k);
-        if (Number.isFinite(d.mean) && Number.isFinite(yv)){
-          xs.push(d.mean); ys.push(yv);
-          xsAll.push(d.mean); ysAll.push(yv);
-        }
-      }
-      if (xs.length){
-        traces.push({
-          x: xs, y: ys,
-          mode:"markers",
-          type:"scatter",
-          name: m,
-          marker:{size:7, opacity:0.75},
-          hovertemplate:`${m}<br>${VARS.find(v=>v.key===xKey)?.label||xKey}: %{x:.2f}<br>${VARS.find(v=>v.key===yKey)?.label||yKey}: %{y:.2f}<extra></extra>`
-        });
-      }
-    }
-  } else {
-    xsAll = xsAgg.slice(); ysAll = ysAgg.slice();
-    traces.push({
-      x: xsAgg, y: ysAgg,
-      mode:"markers",
-      type:"scatter",
-      name:"pontos",
-      marker:{size:8, opacity:0.75},
-      hovertemplate:`${VARS.find(v=>v.key===xKey)?.label||xKey}: %{x:.2f}<br>${VARS.find(v=>v.key===yKey)?.label||yKey}: %{y:.2f}<extra></extra>`
-    });
-  }
-
-  const xLab = VARS.find(v=>v.key===xKey)?.label || xKey;
-  const yLab = VARS.find(v=>v.key===yKey)?.label || yKey;
-
-  if (cmpType === "corr"){
-    const keys = unique([xKey, yKey, sel.v]);
-    const seriesMap = new Map();
-    for (const k of keys) seriesMap.set(k, selectionSeries(rows, k, sel.agg));
-
-    const tset = new Set(seriesMap.get(keys[0]).map(d=>d.t.getTime()));
-    for (const k of keys.slice(1)){
-      const tt = new Set(seriesMap.get(k).map(d=>d.t.getTime()));
-      for (const t of Array.from(tset)) if (!tt.has(t)) tset.delete(t);
-    }
-    const times = Array.from(tset).sort((a,b)=>a-b);
-
-    const aligned = keys.map(k=>{
-      const map = new Map(seriesMap.get(k).map(d=>[d.t.getTime(), d.mean]));
-      return times.map(t=>map.get(t));
-    });
-
-    const z=[];
-    for (let i=0;i<keys.length;i++){
-      const row=[];
-      for (let j=0;j<keys.length;j++){
-        const a = aligned[i].filter(Number.isFinite);
-        const b = aligned[j].filter(Number.isFinite);
-        const r = (corrType==="spearman") ? spearman(a, b).r : pearson(a, b).r;
-        row.push(r);
-      }
-      z.push(row);
-    }
-
-    Plotly.newPlot("chartCMP", [{
-      type:"heatmap",
-      z,
-      x: keys.map(k=>VARS.find(v=>v.key===k)?.label||k),
-      y: keys.map(k=>VARS.find(v=>v.key===k)?.label||k),
-      zmin:-1, zmax:1,
-      hovertemplate:"%{y}<br>%{x}<br>r=%{z:.2f}<extra></extra>"
-    }], {
-      margin:{l:140,r:18,t:36,b:140},
-      paper_bgcolor:"rgba(0,0,0,0)",
-      plot_bgcolor:"rgba(0,0,0,0)",
-      font:{color:"#e6edf7", size:Math.round(12*scale)},
-    }, {displayModeBar:true, responsive:true});
-
-    el("boxCmpStats").innerHTML = `Matriz (${corrType}) alinhada no tempo (variáveis: <b>${keys.length}</b>).`;
-    return;
-  }
-
-  // stats on combined points
-  const corr = (corrType === "spearman") ? spearman(xsAll, ysAll) : pearson(xsAll, ysAll);
-  const reg  = linReg(xsAll, ysAll);
-
-  // regression line
-  const xmin = Math.min(...xsAll), xmax = Math.max(...xsAll);
-  const lineX = [xmin, xmax];
-  const lineY = lineX.map(xx=>reg.intercept + reg.slope*xx);
-  traces.push({
-    x: lineX, y: lineY,
-    mode:"lines",
-    name:"regressão",
-    line:{width:2.5},
-    hoverinfo:"skip",
-    showlegend:true
-  });
-
-  Plotly.newPlot("chartCMP", traces, {
-    margin:{l:60,r:18,t:36,b:52},
-    paper_bgcolor:"rgba(0,0,0,0)",
-    plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:"#e6edf7", size:Math.round(12*scale)},
-    xaxis:{title:xLab, gridcolor:"rgba(255,255,255,.07)"},
-    yaxis:{title:yLab, gridcolor:"rgba(255,255,255,.07)"},
-    legend:{orientation:"h", y:1.18, font:{size:Math.round(11*scale)}},
-  }, {displayModeBar:true, responsive:true});
-
-  el("boxCmpStats").innerHTML =
-`Correlação (${corrType}): <b>${fmt(corr.r,3)}</b>  (n=${corr.n})<br>
-Regressão: y = <b>${fmt(reg.intercept,3)}</b> + <b>${fmt(reg.slope,3)}</b>x  ·  R²=<b>${fmt(reg.r2,3)}</b>  (n=${reg.n})`;
-}
-
-
-/* ========= UI: state, URL sharing ========= */
-
-function setScope(scope){
-  SCOPE = scope;
-  document.querySelectorAll(".segbtn").forEach(b => b.classList.toggle("active", b.dataset.scope===scope));
-  // simple UI hint
-  el("selMun").disabled = (scope==="loc");
-  el("selLoc").disabled = (scope!=="loc");
-}
-
-function toQuery(sel){
-  const q = new URLSearchParams();
-  q.set("scope", SCOPE);
-  if (sel.mun.length) q.set("mun", sel.mun.join("|"));
-  if (sel.loc.length) q.set("loc", sel.loc.join("|"));
-  q.set("v", sel.v);
-  q.set("agg", sel.agg);
-  q.set("start", String(sel.start));
-  q.set("end", String(sel.end));
-  q.set("smooth", sel.smooth);
-  q.set("minmax", sel.bands.minmax ? "1":"0");
-  q.set("std", sel.bands.std ? "1":"0");
-  q.set("mean", sel.bands.mean ? "1":"0");
-  // compare
-  q.set("x", el("selX").value);
-  q.set("y", el("selY").value);
-  q.set("cmp", el("selCmp").value);
-  q.set("corr", el("selCorr").value);
-  return q.toString();
-}
-
-function applyQuery(){
+// ---------- URL state ----------
+function readURL(){
   const q = new URLSearchParams(location.search);
-  const scope = q.get("scope");
-  if (scope) setScope(scope);
-
-  const setMulti = (select, values) => {
-    const set = new Set(values);
-    Array.from(select.options).forEach(o => o.selected = set.has(o.value));
-  };
-
-  const mun = (q.get("mun")||"").split("|").filter(Boolean);
-  const loc = (q.get("loc")||"").split("|").filter(Boolean);
-  if (mun.length) setMulti(el("selMun"), mun);
-  if (loc.length) setMulti(el("selLoc"), loc);
-
-  const v = q.get("v"); if (v) el("selVar").value = v;
-  const agg = q.get("agg"); if (agg) el("selAgg").value = agg;
-  const start = q.get("start"); if (start) el("selStart").value = start;
-  const end = q.get("end"); if (end) el("selEnd").value = end;
-  const smooth = q.get("smooth"); if (smooth) el("selSmooth").value = smooth;
-
-  const minmax = q.get("minmax"); if (minmax!==null) el("chkMinMax").checked = (minmax==="1");
-  const std = q.get("std"); if (std!==null) el("chkStd").checked = (std==="1");
-  const mean = q.get("mean"); if (mean!==null) el("chkMeanLine").checked = (mean==="1");
-
-  const x = q.get("x"); if (x) el("selX").value = x;
-  const y = q.get("y"); if (y) el("selY").value = y;
-  const cmp = q.get("cmp"); if (cmp) el("selCmp").value = cmp;
-  const corr = q.get("corr"); if (corr) el("selCorr").value = corr;
+  if (q.get("mode")) state.mode=q.get("mode");
+  if (q.get("mun")) state.mun=q.get("mun").split("|").filter(Boolean);
+  if (q.get("loc")) state.loc=q.get("loc").split("|").filter(Boolean);
+  if (q.get("v")) state.v=q.get("v");
+  if (q.get("agg")) state.agg=q.get("agg");
+  if (q.get("start")) state.start=+q.get("start");
+  if (q.get("end")) state.end=+q.get("end");
+  if (q.get("smooth")) state.smooth=+q.get("smooth");
+  if (q.get("cmpx")) state.cmp.x=q.get("cmpx");
+  if (q.get("cmpy")) state.cmp.y=q.get("cmpy");
+  if (q.get("cmpt")) state.cmp.type=q.get("cmpt");
+  if (q.get("corr")) state.cmp.corr=q.get("corr");
+  if (q.get("noout")) state.cmp.noOut = q.get("noout")==="1";
+  if (q.get("mk")) state.show.mk = q.get("mk")==="1";
+  if (q.get("mean")) state.show.mean = q.get("mean")==="1";
+  if (q.get("min")) state.show.min = q.get("min")==="1";
+  if (q.get("max")) state.show.max = q.get("max")==="1";
+  if (q.get("minmax")) state.show.minmax = q.get("minmax")==="1";
+  if (q.get("std")) state.show.std = q.get("std")==="1";
+  if (q.get("maxcomp")) state.compareMax=clamp(+q.get("maxcomp"),2,12);
+  if (q.get("font")) state.font=clamp(+q.get("font"),100,140);
+}
+function writeURL(){
+  const q = new URLSearchParams();
+  q.set("mode", state.mode);
+  if (state.mun.length) q.set("mun", state.mun.join("|"));
+  if (state.loc.length) q.set("loc", state.loc.join("|"));
+  q.set("v", state.v);
+  q.set("agg", state.agg);
+  q.set("start", state.start);
+  q.set("end", state.end);
+  q.set("smooth", state.smooth);
+  q.set("mean", state.show.mean?1:0);
+  q.set("min", state.show.min?1:0);
+  q.set("max", state.show.max?1:0);
+  q.set("minmax", state.show.minmax?1:0);
+  q.set("std", state.show.std?1:0);
+  q.set("mk", state.show.mk?1:0);
+  q.set("maxcomp", state.compareMax);
+  q.set("cmpx", state.cmp.x);
+  q.set("cmpy", state.cmp.y);
+  q.set("cmpt", state.cmp.type);
+  q.set("corr", state.cmp.corr);
+  q.set("noout", state.cmp.noOut?1:0);
+  q.set("font", state.font);
+  history.replaceState(null, "", "?" + q.toString());
 }
 
-function resetUI(){
-  // sensible defaults
-  Array.from(el("selMun").options).forEach((o,i)=> o.selected = (i<3));
-  Array.from(el("selLoc").options).forEach(o => o.selected = true);
-  el("selVar").value = "precip_sum_mm";
-  el("selAgg").value = "monthly";
-  el("selSmooth").value = "none";
-  el("chkMinMax").checked = true;
-  el("chkStd").checked = false;
-  el("chkMeanLine").checked = true;
-  el("selX").value = "precip_sum_mm";
-  el("selY").value = "tmean_c";
-  el("selCmp").value = "scatter";
-  el("selCorr").value = "pearson";
-  el("selStart").value = String(META.years[0]);
-  el("selEnd").value = String(META.years[META.years.length-1]);
-  setScope("mun");
-  history.replaceState({}, "", location.pathname);
-  updateAll();
+// ---------- Load ----------
+async function load(){
+  readURL();
+  setFont(state.font);
+
+  const txt = await fetch(DATA_URL).then(r=>r.text());
+  const parsed = Papa.parse(txt, {header:true, dynamicTyping:true, skipEmptyLines:true});
+  RAW = parsed.data
+    .filter(r => r.ym && r.year && r.NM_MUN && r.LOCATION)
+    .map(r => ({
+      ...r,
+      ym: String(r.ym),
+      date: parseYM(String(r.ym))
+    }));
+
+  META.years = Array.from(new Set(RAW.map(r=>+r.year))).sort((a,b)=>a-b);
+  META.muns = Array.from(new Set(RAW.map(r=>r.NM_MUN))).sort((a,b)=>a.localeCompare(b,"pt-BR"));
+  META.locs = Array.from(new Set(RAW.map(r=>r.LOCATION))).sort();
+
+  initUI();
+  update();
 }
 
-/* ========= Main update ========= */
-
-
-function updateAll(){
-  const sel = getSelections();
-  const rows = filterRaw(sel);
-
-  const varLabel = VARS.find(v=>v.key===sel.v)?.label || sel.v;
-
-  const seriesAgg = selectionSeries(rows, sel.v, sel.agg);
-
-  // individual series
-  let groups = [];
-  if (SCOPE === "mun" && sel.mun.length > 1){
-    for (const m of sel.mun){
-      const sub = rows.filter(r=>r.NM_MUN===m);
-      groups.push({ name:m, series: selectionSeries(sub, sel.v, sel.agg) });
-    }
-  } else if (SCOPE === "loc" && sel.loc.length > 1){
-    for (const loc of sel.loc){
-      const sub = rows.filter(r=>r.LOCATION===loc);
-      groups.push({ name:loc, series: selectionSeries(sub, sel.v, sel.agg) });
-    }
+// ---------- UI ----------
+function fillSelect(sel, items, selected){
+  sel.innerHTML = "";
+  for(const it of items){
+    const opt = document.createElement("option");
+    opt.value = it.value ?? it;
+    opt.textContent = it.label ?? it;
+    if (selected && selected.includes(opt.value)) opt.selected = true;
+    sel.appendChild(opt);
   }
+}
+function getSelected(sel){
+  return Array.from(sel.selectedOptions).map(o=>o.value);
+}
 
-  const y = seriesAgg.map(d=>d.mean);
-  const sum = summarize(y);
-
-  let mk = null;
-  let slopeSen = null;
-
-  if (!sum){
-    el("boxSummary").textContent = "Sem dados para este recorte.";
-    el("boxTrend").textContent = "—";
-  } else {
-    el("boxSummary").innerHTML =
-`n: <b>${sum.n}</b><br>
-média: <b>${fmt(sum.mean,2)}</b> · mediana: <b>${fmt(sum.median,2)}</b> · sd: <b>${fmt(sum.sd,2)}</b><br>
-min: <b>${fmt(sum.min,2)}</b> · p25: <b>${fmt(sum.p25,2)}</b> · p75: <b>${fmt(sum.p75,2)}</b> · max: <b>${fmt(sum.max,2)}</b>`;
-
-    mk = mannKendall(y);
-    slopeSen = senSlope(seriesAgg.map(d=>d.year), y);
-    const reg = linReg(seriesAgg.map(d=>d.year), y);
-
-    el("boxTrend").innerHTML =
-`Mann–Kendall: tau=<b>${fmt(mk.tau,3)}</b> · z=<b>${fmt(mk.z,3)}</b> · p=<b>${fmt(mk.p,4)}</b> (n=${mk.n})<br>
-Inclinação de Sen: <b>${fmt(slopeSen,4)}</b> por ano<br>
-Regressão linear: slope=<b>${fmt(reg.slope,4)}</b> por ano · R²=<b>${fmt(reg.r2,3)}</b> (n=${reg.n})`;
+function setModeButtons(){
+  const modes = ["view","compare","aggregate"];
+  for(const m of modes){
+    const btn = document.querySelector(`.segbtn[data-mode="${m}"]`);
+    btn.classList.toggle("active", state.mode===m);
   }
-
-  plotTimeSeries(seriesAgg, sel, varLabel, { groups, mk, sen: slopeSen });
-
-  plotCompare(sel, rows);
-
-  const qs = toQuery(sel);
-  history.replaceState({}, "", `${location.pathname}?${qs}`);
+  const hint = $("modeHint");
+  if (state.mode==="view") hint.textContent = "Veja 1+ municípios (linhas individuais + média).";
+  if (state.mode==="compare") hint.textContent = "Compare municípios (2+) com boxplot, dispersão por grupo e MK por município.";
+  if (state.mode==="aggregate") hint.textContent = "Agrega a seleção em uma única série (visão regional).";
 }
-
-
-function exportFiltered(){
-  const sel = getSelections();
-  const rows = filterRaw(sel);
-  // Export raw rows filtered (not aggregated)
-  const header = Object.keys(rows[0] || {});
-  const lines = [header.join(",")];
-  for (const r of rows){
-    lines.push(header.map(k => {
-      const v = r[k];
-      if (typeof v === "string") return `"${v.replaceAll('"','""')}"`;
-      return String(v);
-    }).join(","));
-  }
-  const blob = new Blob([lines.join("\n")], {type:"text/csv;charset=utf-8"});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `pantanal_clima_filtrado_${sel.start}-${sel.end}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function shareLink(){
-  navigator.clipboard.writeText(location.href).then(()=>toast("Link copiado!"));
-}
-
-/* ========= Init ========= */
 
 function initUI(){
-  // scope buttons
-  document.querySelectorAll(".segbtn").forEach(btn=>{
-    btn.addEventListener("click", ()=>{ setScope(btn.dataset.scope); updateAll(); });
-  });
-
-  el("btnUpdate").addEventListener("click", updateAll);
-  el("btnReset").addEventListener("click", resetUI);
-  el("btnExport").addEventListener("click", exportFiltered);
-  el("btnShare").addEventListener("click", shareLink);
-
-  // reactive update for key controls (lightweight)
-  ["selVar","selAgg","selStart","selEnd","selSmooth","chkMinMax","chkStd","chkMeanLine","chkMaxLine","chkMinLine","chkAnnotMK","selX","selY","selCmp","selCorr","chkNoOutliers","selMun","selLoc","selFont"]
-    .forEach(id => el(id).addEventListener("change", ()=> updateAll()));
-}
-
-function hydrateControls(){
-  // municipalities
-  const munSel = el("selMun");
-  META.muns.forEach(m => {
-    const o=document.createElement("option");
-    o.value=m; o.textContent=m;
-    munSel.appendChild(o);
-  });
-
-  // years
-  const y0 = META.years[0], y1 = META.years[META.years.length-1];
-  const ys = el("selStart"), ye = el("selEnd");
-  for (let y=y0;y<=y1;y++){
-    const o1=document.createElement("option"); o1.value=String(y); o1.textContent=String(y);
-    const o2=document.createElement("option"); o2.value=String(y); o2.textContent=String(y);
-    ys.appendChild(o1); ye.appendChild(o2);
-  }
-
-  // variables
-  const vSel = el("selVar"), xSel = el("selX"), ySel = el("selY");
-  for (const v of VARS){
-    const o=document.createElement("option"); o.value=v.key; o.textContent=v.label;
-    vSel.appendChild(o);
-    const ox=document.createElement("option"); ox.value=v.key; ox.textContent=v.label;
-    const oy=document.createElement("option"); oy.value=v.key; oy.textContent=v.label;
-    xSel.appendChild(ox); ySel.appendChild(oy);
-  }
-
-  // default font (also controlled by selector)
-  if (el("selFont")) setFontScale(el("selFont").value);
-}
-
-async function loadData(){
-  toast("Carregando dados…");
-  return new Promise((resolve,reject)=>{
-    Papa.parse(DATA_URL, {
-      download:true,
-      header:true,
-      dynamicTyping:false,
-      skipEmptyLines:true,
-      complete: (res) => resolve(res.data),
-      error: (err) => reject(err)
+  // modes
+  document.querySelectorAll(".segbtn").forEach(b=>{
+    b.addEventListener("click", ()=>{
+      state.mode = b.dataset.mode;
+      setModeButtons();
+      // enforce compare selection limit
+      if (state.mode==="compare"){
+        enforceCompareLimit();
+      }
+      update();
     });
   });
+  setModeButtons();
+
+  // selects
+  fillSelect($("selMun"), META.muns, state.mun);
+  fillSelect($("selLoc"), META.locs, state.loc);
+  fillSelect($("selVar"), VARS.map(v=>({value:v.key,label:v.label})), [state.v]);
+  fillSelect($("selX"), VARS.map(v=>({value:v.key,label:v.label})), [state.cmp.x]);
+  fillSelect($("selY"), VARS.map(v=>({value:v.key,label:v.label})), [state.cmp.y]);
+
+  fillSelect($("selStart"), META.years, [String(state.start)]);
+  fillSelect($("selEnd"), META.years, [String(state.end)]);
+  $("selStart").value = String(state.start);
+  $("selEnd").value = String(state.end);
+
+  $("selAgg").value = state.agg;
+  $("selSmooth").value = String(state.smooth);
+
+  $("chkMean").checked = state.show.mean;
+  $("chkMin").checked = state.show.min;
+  $("chkMax").checked = state.show.max;
+  $("chkMinMax").checked = state.show.minmax;
+  $("chkStd").checked = state.show.std;
+  $("chkMK").checked = state.show.mk;
+
+  $("selType").value = state.cmp.type;
+  $("selCorr").value = state.cmp.corr;
+  $("chkNoOut").checked = state.cmp.noOut;
+
+  $("maxCompare").value = state.compareMax;
+
+  // font
+  $("fontScale").value = String(state.font);
+  $("fontScaleVal").textContent = state.font+"%";
+  $("fontScale").addEventListener("input", (e)=>{
+    state.font = +e.target.value;
+    $("fontScaleVal").textContent = state.font+"%";
+    setFont(state.font);
+    writeURL();
+    // re-layout plots
+    Plotly.Plots.resize("tsChart");
+    Plotly.Plots.resize("cmpChart");
+  });
+
+  // events
+  $("selMun").addEventListener("change", ()=>{
+    state.mun = getSelected($("selMun"));
+    if (state.mode==="compare") enforceCompareLimit();
+    writeURL();
+  });
+  $("selLoc").addEventListener("change", ()=>{ state.loc = getSelected($("selLoc")); writeURL(); });
+  $("selVar").addEventListener("change", ()=>{ state.v = $("selVar").value; writeURL(); });
+  $("selAgg").addEventListener("change", ()=>{ state.agg = $("selAgg").value; writeURL(); });
+  $("selStart").addEventListener("change", ()=>{ state.start = +$("selStart").value; writeURL(); });
+  $("selEnd").addEventListener("change", ()=>{ state.end = +$("selEnd").value; writeURL(); });
+  $("selSmooth").addEventListener("change", ()=>{ state.smooth = +$("selSmooth").value; writeURL(); });
+
+  const bindChk = (id,key)=>$(id).addEventListener("change", ()=>{
+    state.show[key] = $(id).checked; writeURL();
+  });
+  bindChk("chkMean","mean"); bindChk("chkMin","min"); bindChk("chkMax","max");
+  bindChk("chkMinMax","minmax"); bindChk("chkStd","std"); bindChk("chkMK","mk");
+
+  $("maxCompare").addEventListener("change", ()=>{
+    state.compareMax = clamp(+$("maxCompare").value,2,12);
+    $("maxCompare").value = state.compareMax;
+    if (state.mode==="compare") enforceCompareLimit();
+    writeURL();
+  });
+
+  $("selX").addEventListener("change", ()=>{ state.cmp.x=$("selX").value; writeURL(); });
+  $("selY").addEventListener("change", ()=>{ state.cmp.y=$("selY").value; writeURL(); });
+  $("selType").addEventListener("change", ()=>{ state.cmp.type=$("selType").value; writeURL(); });
+  $("selCorr").addEventListener("change", ()=>{ state.cmp.corr=$("selCorr").value; writeURL(); });
+  $("chkNoOut").addEventListener("change", ()=>{ state.cmp.noOut=$("chkNoOut").checked; writeURL(); });
+
+  $("btnUpdate").addEventListener("click", update);
+  $("btnReset").addEventListener("click", ()=>{
+    state = {
+      mode:"view", mun:[], loc:[], v:"tmean_c", agg:"monthly", start:META.years[0], end:META.years[META.years.length-1],
+      smooth:3, show:{mean:true,min:true,max:true,minmax:true,std:false,mk:true},
+      compareMax:5, cmp:{x:"precip_sum_mm", y:"tmean_c", type:"scatter", corr:"pearson", noOut:true}, font:110
+    };
+    setFont(state.font);
+    initUI();
+    writeURL();
+    update();
+  });
+
+  $("btnShare").addEventListener("click", async ()=>{
+    writeURL();
+    const url = location.href;
+    try{
+      await navigator.clipboard.writeText(url);
+      toast("Link copiado!");
+    }catch(e){
+      prompt("Copie o link:", url);
+    }
+  });
+
+  $("btnExport").addEventListener("click", ()=>{
+    const rows = filteredRows();
+    if (!rows.length){ toast("Sem dados no recorte."); return; }
+    const csv = Papa.unparse(rows);
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `pantanal_${state.mode}_${state.v}_${state.start}-${state.end}.csv`;
+    a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  });
+
+  writeURL();
 }
 
-function coerceRows(rows){
-  return rows.map(r => ({
-    CD_MUN: r.CD_MUN,
-    NM_MUN: r.NM_MUN,
-    SIGLA_UF: r.SIGLA_UF,
-    LOCATION: r.LOCATION,
-    year: parseInt(r.year,10),
-    month: parseInt(r.month,10),
-    ym: r.ym,
-    hi_max_c: parseNumber(r.hi_max_c),
-    hi_mean_c: parseNumber(r.hi_mean_c),
-    precip_sum_mm: parseNumber(r.precip_sum_mm),
-    rh_mean_pct: parseNumber(r.rh_mean_pct),
-    tmax_c: parseNumber(r.tmax_c),
-    tmean_c: parseNumber(r.tmean_c),
-    tmin_c: parseNumber(r.tmin_c),
-  })).filter(r => Number.isFinite(r.year) && r.ym);
-}
-
-(async function main(){
-  initUI();
-  try{
-    const data = await loadData();
-    RAW = coerceRows(data);
-    META.years = unique(RAW.map(r=>r.year)).sort((a,b)=>a-b);
-    META.muns = unique(RAW.map(r=>r.NM_MUN)).sort((a,b)=>a.localeCompare(b,'pt-BR'));
-    hydrateControls();
-
-    // defaults
-    resetUI();
-    applyQuery();
-    updateAll();
-    toast("Pronto! Explore os filtros 🙂");
-  } catch(e){
-    console.error(e);
-    toast("Erro ao carregar dados (veja o console).");
-    el("boxSummary").textContent = "Erro ao carregar o CSV. Verifique /data/pantanal_clima_utf8.csv.";
+function enforceCompareLimit(){
+  // ensure at most compareMax are selected in selMun
+  const sel = $("selMun");
+  const chosen = getSelected(sel);
+  const maxN = state.compareMax;
+  if (chosen.length<=maxN) return;
+  // keep first maxN
+  const keep = new Set(chosen.slice(0, maxN));
+  for(const opt of sel.options){
+    opt.selected = keep.has(opt.value);
   }
-})();
+  state.mun = getSelected(sel);
+  toast(`Comparação: limite ${maxN} municípios.`);
+}
+
+function setFont(pct){
+  document.documentElement.style.setProperty("--fontScale", String(pct/100));
+}
+
+function toast(msg){
+  let t = document.querySelector(".toast");
+  if (!t){
+    t = document.createElement("div");
+    t.className="toast";
+    t.style.position="fixed";
+    t.style.left="50%";
+    t.style.bottom="18px";
+    t.style.transform="translateX(-50%)";
+    t.style.padding="10px 14px";
+    t.style.borderRadius="999px";
+    t.style.background="rgba(2,6,23,.85)";
+    t.style.border="1px solid rgba(96,165,250,.35)";
+    t.style.color="white";
+    t.style.fontWeight="800";
+    t.style.zIndex="9999";
+    t.style.boxShadow="0 14px 40px rgba(0,0,0,.45)";
+    document.body.appendChild(t);
+  }
+  t.textContent=msg;
+  t.style.opacity="1";
+  clearTimeout(t._to);
+  t._to=setTimeout(()=>t.style.opacity="0", 1200);
+}
+
+// ---------- Filtering ----------
+function filteredRows(){
+  let rows = RAW.slice();
+  // municipality filter
+  if (state.mun.length){
+    const set = new Set(state.mun);
+    rows = rows.filter(r => set.has(r.NM_MUN));
+  }
+  // location filter
+  if (state.loc.length){
+    const set = new Set(state.loc);
+    rows = rows.filter(r => set.has(r.LOCATION));
+  }
+  // years
+  const a = Math.min(state.start, state.end);
+  const b = Math.max(state.start, state.end);
+  rows = rows.filter(r => +r.year>=a && +r.year<=b);
+  return rows;
+}
+
+function aggregateRows(rows){
+  // returns grouped structure based on mode:
+  // view/compare: per municipality; aggregate: one series (mean across municipalities per time)
+  // Also handles annual aggregation.
+  const byMun = new Map();
+  for(const r of rows){
+    const m = r.NM_MUN;
+    if (!byMun.has(m)) byMun.set(m, []);
+    byMun.get(m).push(r);
+  }
+
+  function groupTime(list){
+    const map = new Map(); // key -> {x, sum, count}
+    for(const r of list){
+      const key = state.agg==="annual" ? String(r.year) : String(r.ym);
+      if (!map.has(key)) map.set(key, {key, date: state.agg==="annual" ? new Date(+r.year,0,1) : r.date, vals:[]});
+      map.get(key).vals.push(r[state.v]);
+    }
+    // compute aggregator per var kind
+    const vmeta = VARS.find(v=>v.key===state.v) || VARS[0];
+    const out = Array.from(map.values()).sort((a,b)=>a.date-b.date).map(g=>{
+      const arr = g.vals.filter(v=>Number.isFinite(v));
+      if (!arr.length) return {t:g.date, y:null};
+      let y;
+      if (state.agg==="annual" && vmeta.kind==="sum") y = arr.reduce((s,v)=>s+v,0);
+      else y = arr.reduce((s,v)=>s+v,0)/arr.length;
+      return {t:g.date, y};
+    }).filter(d=>d.y!==null);
+    // smoothing
+    const win = state.smooth;
+    const ys = out.map(o=>o.y);
+    const sm = movingAverage(ys, win);
+    return out.map((o,i)=>({...o, y_sm: sm[i]}));
+  }
+
+  if (state.mode==="aggregate"){
+    // 1) compute per municipality series (on y_sm), then average across municipalities per time key
+    const series = [];
+    for(const [m,list] of byMun.entries()){
+      series.push({name:m, points: groupTime(list)});
+    }
+    // union of times
+    const timeKeys = new Map(); // ISO -> date
+    for(const s of series){
+      for(const p of s.points){
+        timeKeys.set(p.t.toISOString(), p.t);
+      }
+    }
+    const dates = Array.from(timeKeys.values()).sort((a,b)=>a-b);
+    const points = dates.map(dt=>{
+      const vals=[];
+      for(const s of series){
+        const found = s.points.find(p=>p.t.getTime()===dt.getTime());
+        if (found) vals.push(found.y_sm);
+      }
+      if (!vals.length) return null;
+      const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      const sd = Math.sqrt(vals.reduce((a,v)=>a+(v-mean)*(v-mean),0)/vals.length);
+      return {t:dt, mean, min, max, sd};
+    }).filter(Boolean);
+    return {mode:"aggregate", points, perMun: series};
+  } else {
+    const series = [];
+    for(const [m,list] of byMun.entries()){
+      series.push({name:m, points: groupTime(list)});
+    }
+    return {mode: state.mode, series};
+  }
+}
+
+// ---------- Update / Render ----------
+function update(){
+  // Validate mode & selection
+  if (state.mode==="compare"){
+    const need = 2;
+    if ((state.mun?.length||0) < need){
+      $("modeHint").textContent = "Comparação: selecione 2+ municípios (em “Municípios”).";
+    } else {
+      $("modeHint").textContent = `Comparação: ${state.mun.length} municípios.`;
+    }
+  }
+
+  writeURL();
+  const rows = filteredRows();
+  const agg = aggregateRows(rows);
+
+  renderStats(rows, agg);
+  renderTimeSeries(agg);
+  renderCompare(rows, agg);
+}
+
+function renderStats(rows, agg){
+  // summary stats for selected series (depends on mode)
+  let values=[];
+  if (agg.mode==="aggregate"){
+    values = agg.points.map(p=>p.mean);
+  } else {
+    // concat all series values (smoothed)
+    for(const s of agg.series){
+      for(const p of s.points){
+        values.push(p.y_sm);
+      }
+    }
+  }
+  values = values.filter(v=>Number.isFinite(v));
+  values.sort((a,b)=>a-b);
+
+  const n = values.length;
+  const mean = n? values.reduce((a,b)=>a+b,0)/n : null;
+  const median = n? values[Math.floor(n/2)] : null;
+  const q = (p)=> n? values[Math.floor((n-1)*p)] : null;
+  const sd = n? Math.sqrt(values.reduce((a,v)=>a+(v-mean)*(v-mean),0)/n) : null;
+  const min = n? values[0] : null;
+  const max = n? values[n-1] : null;
+
+  $("statBox").textContent =
+    `n: ${n}\n`+
+    `média: ${fmt(mean)}\n`+
+    `mediana: ${fmt(median)}\n`+
+    `sd: ${fmt(sd)}\n`+
+    `p05: ${fmt(q(0.05))}  p95: ${fmt(q(0.95))}\n`+
+    `mín: ${fmt(min)}  máx: ${fmt(max)}`;
+
+  // Trend: use aggregate mean series if aggregate; else use mean across municipalities per time
+  let ts = [];
+  if (agg.mode==="aggregate"){
+    ts = agg.points.map(p=>({t:p.t, y:p.mean}));
+  } else {
+    // mean across series at each time
+    const map = new Map();
+    for(const s of agg.series){
+      for(const p of s.points){
+        const k = p.t.toISOString();
+        if (!map.has(k)) map.set(k, {t:p.t, vals:[]});
+        map.get(k).vals.push(p.y_sm);
+      }
+    }
+    ts = Array.from(map.values()).sort((a,b)=>a.t-b.t).map(o=>{
+      const m = o.vals.reduce((a,b)=>a+b,0)/o.vals.length;
+      return {t:o.t, y:m};
+    });
+  }
+  const y = ts.map(p=>p.y).filter(Number.isFinite);
+  const x = ts.map((p,i)=>i); // index for MK, but for Sen slope use year fraction
+  const xf = ts.map(p=>p.t.getFullYear() + (p.t.getMonth()/12));
+  const trend = y.length>=8 ? mannKendall(y) : null;
+  const sen = y.length>=8 ? senSlope(y, xf.slice(0,y.length)) : null;
+  const lr = y.length>=2 ? linreg(xf.slice(0,y.length), y) : null;
+
+  const vmeta = VARS.find(v=>v.key===state.v) || VARS[0];
+  const unit = vmeta.unit || "";
+
+  if (!trend){
+    $("trendBox").textContent = "Série curta demais para MK.";
+  } else {
+    $("trendBox").textContent =
+      `Mann–Kendall: tau=${fmt(trend.tau,3)}  z=${fmt(trend.z,2)}  p=${fmt(trend.p,4)}  (n=${trend.n})\n`+
+      `Inclinação de Sen: ${fmt(sen,4)} ${unit}/ano\n`+
+      `Regressão linear: slope=${fmt(lr.slope,4)} ${unit}/ano  R²=${fmt(lr.r2,3)}  (n=${y.length})`;
+  }
+
+  // quick bullets
+  const qb = [];
+  if (state.mode==="compare" && (state.mun?.length||0)>=2){
+    qb.push(`Comparando ${state.mun.length} municípios.`);
+    qb.push(`Use “Boxplot” para comparar distribuição; “Dispersão” para relação X vs Y.`);
+    qb.push(`MK por município aparece no gráfico (quando ligado).`);
+  } else if (state.mode==="aggregate"){
+    qb.push("Agregado: uma série regional (média espacial).");
+    qb.push("As faixas min–max vêm da variação entre municípios.");
+  } else {
+    qb.push("Visualização: linhas individuais + média.");
+    qb.push("Ative/desative média, mín, máx e bandas no painel.");
+  }
+  $("quickBox").innerHTML = qb.map(x=>`<li>${x}</li>`).join("");
+}
+
+function plotLayout(title, ylab){
+  return {
+    title: {text:title, font:{size:18}},
+    paper_bgcolor:"rgba(0,0,0,0)",
+    plot_bgcolor:"rgba(0,0,0,0)",
+    font:{color:"#e5e7eb", size: 14},
+    margin:{l:70,r:25,t:50,b:55},
+    xaxis:{gridcolor:"rgba(148,163,184,.12)", zeroline:false},
+    yaxis:{title: ylab, gridcolor:"rgba(148,163,184,.12)", zeroline:false},
+    legend:{orientation:"h", y:1.12, x:0, font:{size:12}}
+  };
+}
+
+function renderTimeSeries(agg){
+  const vmeta = VARS.find(v=>v.key===state.v) || VARS[0];
+  const ylab = vmeta.label;
+
+  const traces = [];
+  const annotations = [];
+
+  if (agg.mode==="aggregate"){
+    const t = agg.points.map(p=>p.t);
+    const mean = agg.points.map(p=>p.mean);
+    const min = agg.points.map(p=>p.min);
+    const max = agg.points.map(p=>p.max);
+    const sd = agg.points.map(p=>p.sd);
+
+    // bands
+    if (state.show.minmax){
+      traces.push({
+        type:"scatter", x:t, y:min, mode:"lines", name:"mín (sel)",
+        line:{width:0}, hoverinfo:"skip", showlegend:false
+      });
+      traces.push({
+        type:"scatter", x:t, y:max, mode:"lines", name:"faixa min–max",
+        fill:"tonexty", line:{width:0},
+        fillcolor:"rgba(96,165,250,.12)",
+        hoverinfo:"skip"
+      });
+    }
+    if (state.show.std){
+      const up = mean.map((v,i)=>v+sd[i]);
+      const lo = mean.map((v,i)=>v-sd[i]);
+      traces.push({type:"scatter", x:t, y:lo, mode:"lines", line:{width:0}, hoverinfo:"skip", showlegend:false});
+      traces.push({type:"scatter", x:t, y:up, mode:"lines", fill:"tonexty", line:{width:0}, name:"±1 sd",
+        fillcolor:"rgba(52,211,153,.10)", hoverinfo:"skip"});
+    }
+
+    if (state.show.mean){
+      traces.push({
+        type:"scatter", x:t, y:mean, mode:"lines", name:"média",
+        line:{width:3}
+      });
+    }
+    if (state.show.min){
+      traces.push({type:"scatter", x:t, y:min, mode:"lines", name:"linha mín", line:{width:2, dash:"dot"}});
+    }
+    if (state.show.max){
+      traces.push({type:"scatter", x:t, y:max, mode:"lines", name:"linha máx", line:{width:2, dash:"dot"}});
+    }
+
+    // MK annotation (on mean)
+    if (state.show.mk && mean.length>=8){
+      const yclean = mean.filter(Number.isFinite);
+      const xf = t.map(d=>d.getFullYear() + d.getMonth()/12);
+      const mk = mannKendall(yclean);
+      const sen = senSlope(yclean, xf.slice(0,yclean.length));
+      annotations.push({
+        xref:"paper", yref:"paper", x:0.01, y:1.16, showarrow:false,
+        text:`MK(tau=${mk.tau.toFixed(3)}, p=${mk.p.toFixed(4)}) · Sen=${sen.toFixed(3)} ${vmeta.unit}/ano`,
+        font:{size:12, color:"#b6c0d1"}
+      });
+    }
+  } else {
+    // view/compare: one trace per municipality (smoothed series)
+    const series = agg.series.slice().sort((a,b)=>a.name.localeCompare(b.name,"pt-BR"));
+    const colors = ["#60a5fa","#34d399","#fbbf24","#fb7185","#a78bfa","#22c55e","#38bdf8","#f97316","#e879f9","#f43f5e","#84cc16","#06b6d4"];
+
+    series.forEach((s,idx)=>{
+      const t = s.points.map(p=>p.t);
+      const y = s.points.map(p=>p.y_sm);
+      traces.push({
+        type:"scatter", x:t, y, mode:"lines",
+        name: s.name,
+        line:{width: state.mode==="compare"? 2.6 : 1.6, color: colors[idx%colors.length]},
+        opacity: state.mode==="compare"? 0.95 : 0.55
+      });
+
+      // MK per municipality (compare mode)
+      if (state.mode==="compare" && state.show.mk && y.length>=8){
+        const mk = mannKendall(y);
+        const xf = t.map(d=>d.getFullYear()+d.getMonth()/12);
+        const sen = senSlope(y, xf);
+        annotations.push({
+          xref:"paper", yref:"paper", x:0.01, y:1.16-idx*0.05, showarrow:false,
+          text:`${s.name}: MK tau=${mk.tau.toFixed(3)} p=${mk.p.toFixed(4)} · Sen=${sen.toFixed(2)} ${vmeta.unit}/ano`,
+          font:{size:12, color:"#b6c0d1"}
+        });
+      }
+    });
+
+    // mean across selected (optional)
+    if (state.show.mean){
+      const map = new Map();
+      for(const s of series){
+        for(const p of s.points){
+          const k=p.t.toISOString();
+          if (!map.has(k)) map.set(k,{t:p.t, vals:[]});
+          map.get(k).vals.push(p.y_sm);
+        }
+      }
+      const pts = Array.from(map.values()).sort((a,b)=>a.t-b.t).map(o=>{
+        const m=o.vals.reduce((a,b)=>a+b,0)/o.vals.length;
+        return {t:o.t, y:m};
+      });
+      traces.push({
+        type:"scatter", x:pts.map(p=>p.t), y:pts.map(p=>p.y), mode:"lines",
+        name:"média (seleção)",
+        line:{width:3.6, color:"#9ca3af"},
+        opacity:0.95
+      });
+    }
+  }
+
+  const layout = plotLayout("Série temporal", ylab);
+  layout.annotations = annotations;
+  Plotly.react("tsChart", traces, layout, {displaylogo:false, responsive:true});
+}
+
+function corrPearson(x,y){
+  const n=x.length;
+  const mx=x.reduce((a,b)=>a+b,0)/n;
+  const my=y.reduce((a,b)=>a+b,0)/n;
+  let num=0, dx=0, dy=0;
+  for(let i=0;i<n;i++){
+    const vx=x[i]-mx, vy=y[i]-my;
+    num+=vx*vy; dx+=vx*vx; dy+=vy*vy;
+  }
+  return num/Math.sqrt(dx*dy);
+}
+function corrSpearman(x,y){
+  // rank then pearson
+  function rank(a){
+    const idx=a.map((v,i)=>[v,i]).sort((p,q)=>p[0]-q[0]);
+    const r=new Array(a.length);
+    for(let i=0;i<idx.length;i++){
+      r[idx[i][1]] = i+1;
+    }
+    return r;
+  }
+  return corrPearson(rank(x), rank(y));
+}
+
+function renderCompare(rows, agg){
+  const type = state.cmp.type;
+  const xk = state.cmp.x;
+  const yk = state.cmp.y;
+  const corrType = state.cmp.corr;
+
+  const xmeta = VARS.find(v=>v.key===xk) || VARS[0];
+  const ymeta = VARS.find(v=>v.key===yk) || VARS[0];
+
+  let traces=[];
+  let layout = plotLayout("Comparação", ymeta.label);
+  layout.xaxis.title = xmeta.label;
+
+  const statsEl = $("cmpStats");
+
+  if (!rows.length){
+    Plotly.react("cmpChart", [], layout, {displaylogo:false, responsive:true});
+    statsEl.textContent="Sem dados.";
+    return;
+  }
+
+  if (type==="box"){
+    // Boxplot by municipality (only makes sense in compare mode or when multiple muns selected)
+    const groups = state.mun.length ? state.mun : Array.from(new Set(rows.map(r=>r.NM_MUN))).slice(0, state.compareMax);
+    if (groups.length<2){
+      statsEl.textContent = "Boxplot: selecione 2+ municípios em “Municípios” (ou use modo Comparação).";
+      Plotly.react("cmpChart", [], layout, {displaylogo:false, responsive:true});
+      return;
+    }
+    const set = new Set(groups);
+    const by = new Map();
+    for(const r of rows){
+      if (!set.has(r.NM_MUN)) continue;
+      if (!by.has(r.NM_MUN)) by.set(r.NM_MUN, []);
+      const v = r[state.v];
+      if (Number.isFinite(v)) by.get(r.NM_MUN).push(v);
+    }
+    const colors = ["#60a5fa","#34d399","#fbbf24","#fb7185","#a78bfa","#38bdf8","#f97316","#e879f9","#84cc16","#06b6d4","#f43f5e","#22c55e"];
+    let i=0;
+    for(const g of groups){
+      const vals = by.get(g) || [];
+      traces.push({
+        type:"box",
+        name: g,
+        y: vals,
+        boxpoints: state.cmp.noOut ? false : "outliers",
+        marker:{color: colors[i%colors.length]},
+        line:{width:1},
+        opacity:0.9
+      });
+      i++;
+    }
+    layout.title.text = "Boxplot por município";
+    layout.xaxis.title = "";
+    layout.yaxis.title = (VARS.find(v=>v.key===state.v)?.label || state.v);
+    layout.margin.l=80;
+    Plotly.react("cmpChart", traces, layout, {displaylogo:false, responsive:true});
+    statsEl.textContent = `Boxplot (${groups.length} municípios) · outliers: ${state.cmp.noOut? "ocultos":"mostrados"}`;
+    return;
+  }
+
+  if (type==="corr"){
+    // correlation matrix between selected vars
+    const keys = VARS.map(v=>v.key);
+    // build rows filtered & aggregated to same timestep using current mode's mean series
+    // For simplicity, use raw rows at monthly resolution, merge by (mun,ym) then average across selected muns.
+    const selRows = filteredRows(); // uses state filters
+    const map = new Map(); // time -> values per var
+    for(const r of selRows){
+      const k = String(r.ym);
+      if (!map.has(k)) map.set(k, {k, vals:{} , counts:{}});
+      for(const v of keys){
+        const val = r[v];
+        if (Number.isFinite(val)){
+          map.get(k).vals[v] = (map.get(k).vals[v]||0)+val;
+          map.get(k).counts[v] = (map.get(k).counts[v]||0)+1;
+        }
+      }
+    }
+    const series = Array.from(map.values()).sort((a,b)=>a.k.localeCompare(b.k));
+    const mat=[];
+    for(let i=0;i<keys.length;i++){
+      const row=[];
+      for(let j=0;j<keys.length;j++){
+        const xi=[], yi=[];
+        for(const s of series){
+          const a = (s.vals[keys[i]]||0)/(s.counts[keys[i]]||1);
+          const b = (s.vals[keys[j]]||0)/(s.counts[keys[j]]||1);
+          if (Number.isFinite(a) && Number.isFinite(b)){
+            xi.push(a); yi.push(b);
+          }
+        }
+        let c=0;
+        if (xi.length>=3){
+          c = (corrType==="spearman")? corrSpearman(xi,yi) : corrPearson(xi,yi);
+        }
+        row.push(c);
+      }
+      mat.push(row);
+    }
+    traces = [{
+      type:"heatmap",
+      z: mat,
+      x: VARS.map(v=>v.label),
+      y: VARS.map(v=>v.label),
+      zmin:-1, zmax:1,
+      colorscale:"RdBu",
+      reversescale:true
+    }];
+    layout.title.text = `Matriz de correlação (${corrType})`;
+    layout.xaxis.tickangle = -30;
+    layout.margin = {l:140,r:20,t:60,b:130};
+    Plotly.react("cmpChart", traces, layout, {displaylogo:false, responsive:true});
+    statsEl.textContent = "Valores variam de -1 a +1.";
+    return;
+  }
+
+  // scatter
+  // Build scatter points using aggregated series per municipality when compare, else use aggregated mean series.
+  const points = [];
+  if (state.mode==="compare" && state.mun.length>=2){
+    const set = new Set(state.mun);
+    for(const r of rows){
+      if (!set.has(r.NM_MUN)) continue;
+      const x = r[xk], y = r[yk];
+      if (Number.isFinite(x) && Number.isFinite(y)){
+        points.push({g:r.NM_MUN, x, y});
+      }
+    }
+    const groups = state.mun.slice();
+    const colors = ["#60a5fa","#34d399","#fbbf24","#fb7185","#a78bfa","#38bdf8","#f97316","#e879f9","#84cc16","#06b6d4","#f43f5e","#22c55e"];
+    groups.forEach((g,idx)=>{
+      const arr = points.filter(p=>p.g===g);
+      traces.push({
+        type:"scatter", mode:"markers",
+        name:g,
+        x: arr.map(p=>p.x),
+        y: arr.map(p=>p.y),
+        marker:{size:7, opacity:0.78, color:colors[idx%colors.length]}
+      });
+    });
+
+    // global regression + corr across all points
+    const X = points.map(p=>p.x);
+    const Y = points.map(p=>p.y);
+    if (X.length>=3){
+      const lr = linreg(X,Y);
+      const xmin = Math.min(...X), xmax = Math.max(...X);
+      traces.push({
+        type:"scatter", mode:"lines", name:"regressão (global)",
+        x:[xmin,xmax],
+        y:[lr.intercept+lr.slope*xmin, lr.intercept+lr.slope*xmax],
+        line:{width:3, color:"#9ca3af"},
+        opacity:0.9
+      });
+      const c = (corrType==="spearman")? corrSpearman(X,Y) : corrPearson(X,Y);
+      statsEl.textContent = `Correlação (${corrType}): ${fmt(c,3)} (n=${X.length}) · Regressão global: y = ${fmt(lr.intercept,3)} + ${fmt(lr.slope,6)}x · R²=${fmt(lr.r2,3)}`;
+    } else {
+      statsEl.textContent = "Poucos pontos para regressão/correlação.";
+    }
+    layout.title.text = "Dispersão (por município)";
+    Plotly.react("cmpChart", traces, layout, {displaylogo:false, responsive:true});
+    return;
+  } else {
+    // single scatter for selection
+    const X=[], Y=[];
+    for(const r of rows){
+      const x=r[xk], y=r[yk];
+      if (Number.isFinite(x) && Number.isFinite(y)){ X.push(x); Y.push(y); }
+    }
+    traces.push({
+      type:"scatter", mode:"markers", name:"pontos",
+      x:X, y:Y,
+      marker:{size:7, opacity:0.72, color:"#60a5fa"}
+    });
+    if (X.length>=3){
+      const lr = linreg(X,Y);
+      const xmin = Math.min(...X), xmax = Math.max(...X);
+      traces.push({
+        type:"scatter", mode:"lines", name:"regressão",
+        x:[xmin,xmax],
+        y:[lr.intercept+lr.slope*xmin, lr.intercept+lr.slope*xmax],
+        line:{width:3, color:"#9ca3af"},
+        opacity:0.9
+      });
+      const c = (corrType==="spearman")? corrSpearman(X,Y) : corrPearson(X,Y);
+      statsEl.textContent = `Correlação (${corrType}): ${fmt(c,3)} (n=${X.length}) · Regressão: y = ${fmt(lr.intercept,3)} + ${fmt(lr.slope,6)}x · R²=${fmt(lr.r2,3)}`;
+    } else {
+      statsEl.textContent = "Poucos pontos para regressão/correlação.";
+    }
+    layout.title.text = "Dispersão";
+    Plotly.react("cmpChart", traces, layout, {displaylogo:false, responsive:true});
+  }
+}
+
+load();
