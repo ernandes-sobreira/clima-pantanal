@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Pantanal Clima — Séries, Comparações e Tendências</title>
+  <meta name="description" content="Plataforma interativa para explorar séries climáticas do Pantanal: comparação entre municípios, planalto/planície, estatísticas descritivas e testes de tendência." />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Plotly for charts -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">🌦️</div>
+      <div>
+        <div class="title">Pantanal Clima</div>
+        <div class="subtitle">Séries temporais · Comparações · Tendências · Estatística</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="btnShare" class="btn ghost" title="Copiar link com filtros">Compartilhar</button>
+      <button id="btnExport" class="btn" title="Exportar dados filtrados">Exportar CSV</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="panel">
+      <div class="panel-title">1) Filtros</div>
+
+      <div class="grid">
+        <div class="field">
+          <label>Recorte</label>
+          <div class="seg" role="tablist" aria-label="Recorte">
+            <button class="segbtn active" data-scope="mun">Municípios</button>
+            <button class="segbtn" data-scope="loc">Planalto vs Planície</button>
+            <button class="segbtn" data-scope="agg">Agregado (seleção)</button>
+          </div>
+          <div class="hint">“Agregado” calcula estatísticas sobre a seleção (ex: média entre municípios).</div>
+        </div>
+
+        <div class="field">
+          <label>Municípios</label>
+          <select id="selMun" multiple size="8"></select>
+          <div class="hint">Dica: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> para múltiplos.</div>
+        </div>
+
+        <div class="field">
+          <label>Planalto/Planície</label>
+          <select id="selLoc" multiple size="4">
+            <option value="PLANALTO">PLANALTO</option>
+            <option value="PLANÍCIE">PLANÍCIE</option>
+          </select>
+          <div class="hint">Funciona melhor no modo “Planalto vs Planície”.</div>
+        </div>
+
+        <div class="field">
+          <label>Variável (Y)</label>
+          <select id="selVar"></select>
+          <div class="hint">Você pode comparar duas variáveis na aba “Comparar”.</div>
+        </div>
+
+        <div class="field">
+          <label>Agregação</label>
+          <select id="selAgg">
+            <option value="monthly">Mensal</option>
+            <option value="annual">Anual</option>
+          </select>
+          <div class="hint">A base original já é mensal (ym). “Anual” agrega por ano.</div>
+        </div>
+
+        <div class="field">
+          <label>Período</label>
+          <div class="row">
+            <select id="selStart"></select>
+            <span class="sep">→</span>
+            <select id="selEnd"></select>
+          </div>
+          <div class="hint">Ajuste o período para focar tendências.</div>
+        </div>
+
+        <div class="field">
+          <label>Suavização</label>
+          <select id="selSmooth">
+            <option value="none">Sem</option>
+            <option value="3">Média móvel 3</option>
+            <option value="6">Média móvel 6</option>
+            <option value="12">Média móvel 12</option>
+          </select>
+          <div class="hint">Média móvel simples (aplicada após a agregação).</div>
+        </div>
+
+        <div class="field">
+          <label>Mostrar bandas</label>
+          <div class="checks">
+            <label><input type="checkbox" id="chkMinMax" checked /> min–max</label>
+            <label><input type="checkbox" id="chkStd" /> ±1 desvio padrão</label>
+            <label><input type="checkbox" id="chkMeanLine" checked /> média</label>
+          </div>
+          <div class="hint">Bandas são calculadas sobre a seleção (municípios/loc).</div>
+        </div>
+      </div>
+
+      <div class="panel-actions">
+        <button id="btnUpdate" class="btn">Atualizar</button>
+        <button id="btnReset" class="btn ghost">Reset</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">2) Séries temporais</div>
+      <div id="chartTS" class="chart"></div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-h">Resumo (seleção)</div>
+          <div id="boxSummary" class="mono small"></div>
+        </div>
+        <div class="card">
+          <div class="card-h">Tendência (robusta)</div>
+          <div id="boxTrend" class="mono small"></div>
+          <div class="small note">
+            Teste de Mann–Kendall (tau e p), inclinação de Sen, regressão linear (inclinação e R²).
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">3) Comparar variáveis</div>
+
+      <div class="grid2">
+        <div class="field">
+          <label>X</label>
+          <select id="selX"></select>
+        </div>
+        <div class="field">
+          <label>Y</label>
+          <select id="selY"></select>
+        </div>
+        <div class="field">
+          <label>Tipo</label>
+          <select id="selCmp">
+            <option value="scatter">Dispersão</option>
+            <option value="corr">Matriz de correlação</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Correlação</label>
+          <select id="selCorr">
+            <option value="pearson">Pearson</option>
+            <option value="spearman">Spearman</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="chartCMP" class="chart"></div>
+      <div id="boxCmpStats" class="mono small"></div>
+    </section>
+
+    <footer class="footer">
+      <div>
+        Feito para GitHub Pages (estático). Carrega o CSV localmente e roda tudo no navegador.
+        <span class="muted">Dica: se o CSV crescer muito, a gente migra para “tiles”/parquet + WASM.</span>
+      </div>
+    </footer>
+  </main>
+
+  <div id="toast" class="toast" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
