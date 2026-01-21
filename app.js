@@ -147,8 +147,8 @@ function readURL(){
   if (q.get("loc")) state.loc=q.get("loc").split("|").filter(Boolean);
   if (q.get("v")) state.v=q.get("v");
   if (q.get("agg")) state.agg=q.get("agg");
-  if (q.get("start")) state.start=+q.get("start");
-  if (q.get("end")) state.end=+q.get("end");
+  if (q.get("start")) { const v=+q.get("start"); if (Number.isFinite(v)) state.start=v; }
+  if (q.get("end")) { const v=+q.get("end"); if (Number.isFinite(v)) state.end=v; }
   if (q.get("smooth")) state.smooth=+q.get("smooth");
   if (q.get("cmpx")) state.cmp.x=q.get("cmpx");
   if (q.get("cmpy")) state.cmp.y=q.get("cmpy");
@@ -171,8 +171,8 @@ function writeURL(){
   if (state.loc.length) q.set("loc", state.loc.join("|"));
   q.set("v", state.v);
   q.set("agg", state.agg);
-  q.set("start", state.start);
-  q.set("end", state.end);
+  if (Number.isFinite(state.start)) q.set("start", state.start);
+  if (Number.isFinite(state.end)) q.set("end", state.end);
   q.set("smooth", state.smooth);
   q.set("mean", state.show.mean?1:0);
   q.set("min", state.show.min?1:0);
