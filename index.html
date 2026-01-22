@@ -1,161 +1,140 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Pantanal Clima — Séries, Comparações e Tendências</title>
-  <link rel="stylesheet" href="./styles.css"/>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs/%3E%3Ccircle cx='32' cy='32' r='30' fill='%230b1220'/%3E%3Cpath d='M18 38c10 2 18-7 28-2 0 8-7 14-14 14S20 46 18 38Z' fill='%2360a5fa'/%3E%3Cpath d='M18 30c8-10 20-10 28 0-9-3-19-3-28 0Z' fill='%2334d399'/%3E%3C/svg%3E"/>
+  <meta name="description" content="Plataforma interativa para explorar séries climáticas do Pantanal: comparação entre municípios, planalto/planície, estatísticas descritivas e testes de tendência." />
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Plotly for charts -->
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <!-- PapaParse for CSV parsing -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
-      <div class="logo" aria-hidden="true">🌧️</div>
+      <div class="logo">🌦️</div>
       <div>
         <div class="title">Pantanal Clima</div>
         <div class="subtitle">Séries temporais · Comparações · Tendências · Estatística</div>
       </div>
     </div>
-
     <div class="top-actions">
-      <div class="fontCtl">
-        <label for="fontScale">Fonte</label>
-        <input id="fontScale" type="range" min="100" max="140" step="5" value="110"/>
-        <span id="fontScaleVal">110%</span>
-      </div>
-      <button id="btnAbout" class="btn ghost">Sobre</button>
-      <button id="btnShare" class="btn ghost">Compartilhar</button>
-      <button id="btnExport" class="btn primary">Exportar CSV</button>
+      <button id="btnShare" class="btn ghost" title="Copiar link com filtros">Compartilhar</button>
+      <button id="btnExport" class="btn" title="Exportar dados filtrados">Exportar CSV</button>
     </div>
   </header>
 
   <main class="wrap">
-    <section class="card">
-      <div class="card-h">1) Filtros</div>
+    <section class="panel">
+      <div class="panel-title">1) Filtros</div>
 
-      <div class="grid2">
-        <div>
-          <div class="segrow">
-            <div class="seg">
-              <button class="segbtn" data-mode="view" id="modeView">Visualização</button>
-              <button class="segbtn" data-mode="compare" id="modeCompare">Comparação</button>
-              <button class="segbtn" data-mode="aggregate" id="modeAgg">Agregado</button>
-            </div>
-            <div class="hint" id="modeHint"></div>
+      <div class="grid">
+        <div class="field">
+          <label>Recorte</label>
+          <div class="seg" role="tablist" aria-label="Recorte">
+            <button class="segbtn active" data-scope="mun">Municípios</button>
+            <button class="segbtn" data-scope="loc">Planalto vs Planície</button>
+            <button class="segbtn" data-scope="agg">Agregado (seleção)</button>
           </div>
-
-          <div class="row">
-            <div class="field">
-              <label>Municípios</label>
-              <select id="selMun" multiple size="9"></select>
-              <div class="note">Dica: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> para múltiplos.</div>
-            </div>
-
-            <div class="field">
-              <label>Planalto/Planície</label>
-              <select id="selLoc" multiple size="3"></select>
-              <div class="note">Opcional. Funciona melhor em “Visualização” e “Comparação”.</div>
-            </div>
-
-            <div class="field">
-              <label>Variável (Y)</label>
-              <select id="selVar"></select>
-              <div class="note">No modo “Comparação”, você compara municípios na mesma variável.</div>
-            </div>
-          </div>
-
-          <div class="row">
-            <div class="field">
-              <label>Agregação</label>
-              <select id="selAgg">
-                <option value="monthly">Mensal</option>
-                <option value="annual">Anual</option>
-              </select>
-              <div class="note">“Anual” agrega por ano (precip = soma; temperaturas = média).</div>
-            </div>
-
-            <div class="field">
-              <label>Período</label>
-              <div class="inline">
-                <select id="selStart"></select>
-                <span class="dash">—</span>
-                <select id="selEnd"></select>
-              </div>
-              <div class="note">Ajuste o período para focar tendências.</div>
-            </div>
-
-            <div class="field">
-              <label>Suavização</label>
-              <select id="selSmooth">
-                <option value="0">Sem</option>
-                <option value="3">Média móvel 3</option>
-                <option value="5">Média móvel 5</option>
-              </select>
-              <div class="note">Aplicada após agregação.</div>
-            </div>
-          </div>
-
-          <div class="row">
-            <div class="field">
-              <label>Linhas e bandas</label>
-              <div class="checks">
-                <label><input type="checkbox" id="chkMean" checked> média</label>
-                <label><input type="checkbox" id="chkMin" checked> linha mín</label>
-                <label><input type="checkbox" id="chkMax" checked> linha máx</label>
-                <label><input type="checkbox" id="chkMinMax" checked> faixa min–max</label>
-                <label><input type="checkbox" id="chkStd"> ±1 desvio padrão</label>
-                <label><input type="checkbox" id="chkMK" checked> mostrar MK</label>
-                <label><input type="checkbox" id="chkHMean"> linha média (série)</label>
-                <label><input type="checkbox" id="chkHMin"> linha mín (série)</label>
-                <label><input type="checkbox" id="chkHMax"> linha máx (série)</label>
-
-              </div>
-              <div class="note">No modo “Agregado”, linhas são calculadas sobre a seleção.</div>
-            </div>
-
-            <div class="field">
-              <label>Comparação</label>
-              <div class="inline">
-                <span class="pill">máx grupos</span>
-                <input id="maxCompare" type="number" min="2" max="12" value="5"/>
-              </div>
-              <div class="note">No modo “Comparação”, escolha 2+ municípios (até o limite).</div>
-              <div class="inline" style="margin-top:8px;">
-                <span class="pill">comparar por</span>
-                <select id="selCompareBy">
-                  <option value="mun">Municípios</option>
-                  <option value="loc">Planalto vs Planície</option>
-                </select>
-              </div>
-              <div class="note small">Em “Planalto vs Planície”, o gráfico usa a média do conjunto em cada grupo.</div>
-
-            </div>
-
-            <div class="field actions">
-              <label>&nbsp;</label>
-              <div class="inline">
-                <button id="btnUpdate" class="btn primary">Atualizar</button>
-                <button id="btnReset" class="btn ghost">Reset</button>
-              </div>
-              <div class="note">Se algo parecer “travado”, use Ctrl+F5 para limpar cache.</div>
-            </div>
-          </div>
+          <div class="hint">“Agregado” calcula estatísticas sobre a seleção (ex: média entre municípios).</div>
         </div>
 
+        <div class="field">
+          <label>Municípios</label>
+          <select id="selMun" multiple size="8"></select>
+          <div class="hint">Dica: use <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> para múltiplos.</div>
+        </div>
+
+        <div class="field">
+          <label>Planalto/Planície</label>
+          <select id="selLoc" multiple size="4">
+            <option value="PLANALTO">PLANALTO</option>
+            <option value="PLANÍCIE">PLANÍCIE</option>
+          </select>
+          <div class="hint">Funciona melhor no modo “Planalto vs Planície”.</div>
+        </div>
+
+        <div class="field">
+          <label>Variável (Y)</label>
+          <select id="selVar"></select>
+          <div class="hint">Você pode comparar duas variáveis na aba “Comparar”.</div>
+        </div>
+
+        <div class="field">
+          <label>Agregação</label>
+          <select id="selAgg">
+            <option value="monthly">Mensal</option>
+            <option value="annual">Anual</option>
+          </select>
+          <div class="hint">A base original já é mensal (ym). “Anual” agrega por ano.</div>
+        </div>
+
+        <div class="field">
+          <label>Período</label>
+          <div class="row">
+            <select id="selStart"></select>
+            <span class="sep">→</span>
+            <select id="selEnd"></select>
+          </div>
+          <div class="hint">Ajuste o período para focar tendências.</div>
+        </div>
+
+        <div class="field">
+          <label>Suavização</label>
+          <select id="selSmooth">
+            <option value="none">Sem</option>
+            <option value="3">Média móvel 3</option>
+            <option value="6">Média móvel 6</option>
+            <option value="12">Média móvel 12</option>
+          </select>
+          <div class="hint">Média móvel simples (aplicada após a agregação).</div>
+        </div>
+
+        <div class="field">
+          <label>Mostrar bandas</label>
+          <div class="checks">
+            <label><input type="checkbox" id="chkMinMax" checked /> min–max</label>
+            <label><input type="checkbox" id="chkStd" /> ±1 desvio padrão</label>
+            <label><input type="checkbox" id="chkMeanLine" checked /> média</label>
+            <label><input type="checkbox" id="chkMaxLine" /> linha máx</label>
+            <label><input type="checkbox" id="chkMinLine" /> linha mín</label>
+            <label><input type="checkbox" id="chkAnnotMK" checked /> mostrar MK</label>
+          </div>
+          <div class="hint">Bandas são calculadas sobre a seleção (municípios/loc).</div>
+        </div>
+      </div>
+
+      <div class="panel-actions">
+        <button id="btnUpdate" class="btn">Atualizar</button>
+        <button id="btnReset" class="btn ghost">Reset</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">2) Séries temporais</div>
+      <div id="chartTS" class="chart"></div>
+
+      <div class="cards">
+        <div class="card">
+          <div class="card-h">Resumo (seleção)</div>
+          <div id="boxSummary" class="mono small"></div>
+        </div>
+        <div class="card">
+          <div class="card-h">Tendência (robusta)</div>
+          <div id="boxTrend" class="mono small"></div>
+          <div class="small note">
+            Teste de Mann–Kendall (tau e p), inclinação de Sen, regressão linear (inclinação e R²).
+          </div>
         </div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-h">2) Séries temporais</div>
-      <div id="tsChart" class="plot"></div>
-    </section>
+    <section class="panel">
+      <div class="panel-title">3) Comparar variáveis</div>
 
-    <section class="card">
-      <div class="card-h">3) Comparar variáveis</div>
-      <div class="row">
+      <div class="grid2">
         <div class="field">
           <label>X</label>
           <select id="selX"></select>
@@ -166,8 +145,10 @@
         </div>
         <div class="field">
           <label>Tipo</label>
-          <select id="selType">
-            <option value="scatter">Dispersão</option><option value="corr">Matriz de correlação</option>
+          <select id="selCmp">
+            <option value="scatter">Dispersão</option>
+            <option value="corr">Matriz de correlação</option>
+            <option value="box">Boxplot (municípios)</option>
           </select>
         </div>
         <div class="field">
@@ -177,64 +158,27 @@
             <option value="spearman">Spearman</option>
           </select>
         </div>
-      </div>
-      <div id="cmpChart" class="plot"></div>
-      <div class="mono small" id="cmpStats">—</div>
-    </section>
-
-
-    <section class="card" id="results">
-      <div class="card-h">4) Resultados</div>
-      <div class="gridRes">
-        <div class="mini cardmini">
-          <div class="mini-h">Resumo (seleção)</div>
-          <div id="statBox" class="mono small">—</div>
-        </div>
-
-        <div class="mini cardmini">
-          <div class="mini-h">Tendência (robusta)</div>
-          <div class="mono small" id="trendBox">—</div>
-          <div class="note small">
-            MK = Mann–Kendall (tendência monotônica) · Sen slope = inclinação robusta.
+        <div class="field">
+          <label>Boxplot</label>
+          <div class="checks">
+            <label><input type="checkbox" id="chkNoOutliers" checked /> sem outliers</label>
           </div>
         </div>
-
-        <div class="mini cardmini">
-          <div class="mini-h">Leitura rápida</div>
-          <ul class="bullets small" id="quickBox"><li>—</li></ul>
-        </div>
       </div>
+
+      <div id="chartCMP" class="chart"></div>
+      <div id="boxCmpStats" class="mono small"></div>
     </section>
 
-    <footer class="foot">
-      Feito para GitHub Pages (estático). Carrega o CSV localmente e roda tudo no navegador.
-      Se o CSV crescer muito, a evolução é tiles/parquet + DuckDB-WASM.
+    <footer class="footer">
+      <div>
+        Feito para GitHub Pages (estático). Carrega o CSV localmente e roda tudo no navegador.
+        <span class="muted">Dica: se o CSV crescer muito, a gente migra para “tiles”/parquet + WASM.</span>
+      </div>
     </footer>
   </main>
 
-  <script src="./app.js"></script>
-
-  <div class="modal" id="aboutModal" aria-hidden="true">
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
-      <div class="modal-head">
-        <div class="modal-title" id="aboutTitle">Sobre a plataforma</div>
-        <button class="btn ghost" id="btnAboutClose" aria-label="Fechar">✕</button>
-      </div>
-      <div class="modal-body">
-        <p><strong>Pantanal Clima</strong> é uma plataforma interativa para visualização e análise de séries climáticas dos municípios do Pantanal (planalto e planície), com foco em ensino, pesquisa, extensão, inovação e consulta pública.</p>
-        <ul>
-          <li><strong>Idealização, desenvolvimento do app e curadoria dos dados:</strong> <strong>Ernandes Sobreira</strong> (UNEMAT) — conceito, organização e comunicação científica.</li>
-          <li><strong>Origem:</strong> séries climáticas extraídas e organizadas a partir do <strong>Google Earth Engine</strong> (produtos satelitais e reanálises), com agregação por município (ex.: precipitação, temperatura, umidade e índice de calor).</li>
-          <li><strong>Recorte:</strong> séries mensais por município (2001–2024, conforme disponível).</li>
-          <li><strong>Análises:</strong> resumo estatístico, correlações e tendência robusta (Mann–Kendall + inclinação de Sen).</li>
-        </ul>
-        <p class="small muted">Observação: esta plataforma roda 100% no navegador (GitHub Pages). Resultados são exploratórios e devem ser interpretados com contexto climatológico e validação adicional quando aplicável.</p>
-      </div>
-      <div class="modal-foot">
-        <button class="btn primary" id="btnAboutOk">Entendi</button>
-      </div>
-    </div>
-  </div>
-
+  <div id="toast" class="toast" aria-live="polite"></div>
+  <script src="app.js"></script>
 </body>
 </html>
