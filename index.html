@@ -107,6 +107,10 @@
                 <label><input type="checkbox" id="chkMinMax" checked> faixa min–max</label>
                 <label><input type="checkbox" id="chkStd"> ±1 desvio padrão</label>
                 <label><input type="checkbox" id="chkMK" checked> mostrar MK</label>
+                <label><input type="checkbox" id="chkHMean"> linha média (série)</label>
+                <label><input type="checkbox" id="chkHMin"> linha mín (série)</label>
+                <label><input type="checkbox" id="chkHMax"> linha máx (série)</label>
+
               </div>
               <div class="note">No modo “Agregado”, linhas são calculadas sobre a seleção.</div>
             </div>
@@ -118,6 +122,15 @@
                 <input id="maxCompare" type="number" min="2" max="12" value="5"/>
               </div>
               <div class="note">No modo “Comparação”, escolha 2+ municípios (até o limite).</div>
+              <div class="inline" style="margin-top:8px;">
+                <span class="pill">comparar por</span>
+                <select id="selCompareBy">
+                  <option value="mun">Municípios</option>
+                  <option value="loc">Planalto vs Planície</option>
+                </select>
+              </div>
+              <div class="note small">Em “Planalto vs Planície”, o gráfico usa a média do conjunto em cada grupo.</div>
+
             </div>
 
             <div class="field actions">
@@ -131,26 +144,6 @@
           </div>
         </div>
 
-        <div class="side">
-          <div class="mini cardmini">
-            <div class="mini-h">Resumo (seleção)</div>
-            <div id="statBox" class="mono small">—</div>
-          </div>
-
-          <div class="mini cardmini">
-            <div class="mini-h">Tendência (robusta)</div>
-            <div class="mono small" id="trendBox">—</div>
-            <div class="note small">
-              MK = Mann–Kendall (tendência monotônica) · Sen slope = inclinação robusta.
-            </div>
-          </div>
-
-          <div class="mini cardmini">
-            <div class="mini-h">Leitura rápida</div>
-            <ul class="bullets small" id="quickBox">
-              <li>—</li>
-            </ul>
-          </div>
         </div>
       </div>
     </section>
@@ -174,9 +167,7 @@
         <div class="field">
           <label>Tipo</label>
           <select id="selType">
-            <option value="scatter">Dispersão</option>
-            <option value="box">Boxplot (municípios)</option>
-            <option value="corr">Matriz de correlação</option>
+            <option value="scatter">Dispersão</option><option value="corr">Matriz de correlação</option>
           </select>
         </div>
         <div class="field">
@@ -186,13 +177,33 @@
             <option value="spearman">Spearman</option>
           </select>
         </div>
-        <div class="field">
-          <label>Boxplot</label>
-          <label class="checkline"><input type="checkbox" id="chkNoOut" checked> sem outliers</label>
-        </div>
       </div>
       <div id="cmpChart" class="plot"></div>
       <div class="mono small" id="cmpStats">—</div>
+    </section>
+
+
+    <section class="card" id="results">
+      <div class="card-h">4) Resultados</div>
+      <div class="gridRes">
+        <div class="mini cardmini">
+          <div class="mini-h">Resumo (seleção)</div>
+          <div id="statBox" class="mono small">—</div>
+        </div>
+
+        <div class="mini cardmini">
+          <div class="mini-h">Tendência (robusta)</div>
+          <div class="mono small" id="trendBox">—</div>
+          <div class="note small">
+            MK = Mann–Kendall (tendência monotônica) · Sen slope = inclinação robusta.
+          </div>
+        </div>
+
+        <div class="mini cardmini">
+          <div class="mini-h">Leitura rápida</div>
+          <ul class="bullets small" id="quickBox"><li>—</li></ul>
+        </div>
+      </div>
     </section>
 
     <footer class="foot">
@@ -212,8 +223,8 @@
       <div class="modal-body">
         <p><strong>Pantanal Clima</strong> é uma plataforma interativa para visualização e análise de séries climáticas dos municípios do Pantanal (planalto e planície), com foco em ensino, pesquisa, extensão, inovação e consulta pública.</p>
         <ul>
-          <li><strong>Autor e curadoria dos dados:</strong> Ernandes Sobreira (UNEMAT)</li>
-          <li><strong>Origem:</strong> dados climáticos derivados via <em>Google Earth Engine</em> a partir de produtos de reanálise/satélite (ex.: precipitação, temperatura, umidade e índice de calor).</li>
+          <li><strong>Idealização, desenvolvimento do app e curadoria dos dados:</strong> <strong>Ernandes Sobreira</strong> (UNEMAT) — conceito, organização e comunicação científica.</li>
+          <li><strong>Origem:</strong> séries climáticas extraídas e organizadas a partir do <strong>Google Earth Engine</strong> (produtos satelitais e reanálises), com agregação por município (ex.: precipitação, temperatura, umidade e índice de calor).</li>
           <li><strong>Recorte:</strong> séries mensais por município (2001–2024, conforme disponível).</li>
           <li><strong>Análises:</strong> resumo estatístico, correlações e tendência robusta (Mann–Kendall + inclinação de Sen).</li>
         </ul>

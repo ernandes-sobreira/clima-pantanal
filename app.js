@@ -20,6 +20,7 @@ let RAW = [];
 let META = {years:[], muns:[], locs:[]};
 let state = {
   mode:"view", // view | compare | aggregate
+  compareBy:"mun", // mun | loc
   mun:[],
   loc:[],
   v:"tmean_c",
@@ -27,9 +28,9 @@ let state = {
   start:2001,
   end:2024,
   smooth:3,
-  show:{mean:true,min:true,max:true,minmax:true,std:false,mk:true},
+  show:{mean:true,min:true,max:true,minmax:true,std:false,mk:true,hmean:false,hmin:false,hmax:false},
   compareMax:5,
-  cmp:{x:"precip_sum_mm", y:"tmean_c", type:"scatter", corr:"pearson", noOut:true},
+  cmp:{x:"precip_sum_mm", y:"tmean_c", type:"scatter", corr:"pearson"},
   font:110
 };
 
@@ -149,13 +150,15 @@ function readURL(){
   if (q.get("agg")) state.agg=q.get("agg");
   if (q.get("start")) { const v=+q.get("start"); if (Number.isFinite(v)) state.start=v; }
   if (q.get("end")) { const v=+q.get("end"); if (Number.isFinite(v)) state.end=v; }
-  if (q.get("smooth")) state.smooth=+q.get("smooth");
+  if (q.get("smooth")) { const s=+q.get("smooth"); if (Number.isFinite(s)) state.smooth=s; }
   if (q.get("cmpx")) state.cmp.x=q.get("cmpx");
   if (q.get("cmpy")) state.cmp.y=q.get("cmpy");
   if (q.get("cmpt")) state.cmp.type=q.get("cmpt");
-  if (q.get("corr")) state.cmp.corr=q.get("corr");
-  if (q.get("noout")) state.cmp.noOut = q.get("noout")==="1";
-  if (q.get("mk")) state.show.mk = q.get("mk")==="1";
+  if (q.get("corr")) state.cmp.corr=q.get("corr");  if (q.get("mk")) state.show.mk = q.get("mk")==="1";
+  if (q.get("cby")) state.compareBy = q.get("cby");
+  if (q.get("hmean")) state.show.hmean = q.get("hmean")==="1";
+  if (q.get("hmin")) state.show.hmin = q.get("hmin")==="1";
+  if (q.get("hmax")) state.show.hmax = q.get("hmax")==="1";
   if (q.get("mean")) state.show.mean = q.get("mean")==="1";
   if (q.get("min")) state.show.min = q.get("min")==="1";
   if (q.get("max")) state.show.max = q.get("max")==="1";
@@ -173,7 +176,7 @@ function writeURL(){
   q.set("agg", state.agg);
   if (Number.isFinite(state.start)) q.set("start", state.start);
   if (Number.isFinite(state.end)) q.set("end", state.end);
-  q.set("smooth", state.smooth);
+  if (Number.isFinite(state.smooth)) q.set("smooth", state.smooth);
   q.set("mean", state.show.mean?1:0);
   q.set("min", state.show.min?1:0);
   q.set("max", state.show.max?1:0);
@@ -185,7 +188,10 @@ function writeURL(){
   q.set("cmpy", state.cmp.y);
   q.set("cmpt", state.cmp.type);
   q.set("corr", state.cmp.corr);
-  q.set("noout", state.cmp.noOut?1:0);
+  q.set("cby", state.compareBy||"mun");
+  q.set("hmean", state.show.hmean?1:0);
+  q.set("hmin", state.show.hmin?1:0);
+  q.set("hmax", state.show.hmax?1:0);
   q.set("font", state.font);
   history.replaceState(null, "", "?" + q.toString());
 }
@@ -276,11 +282,14 @@ function initUI(){
   $("chkMinMax").checked = state.show.minmax;
   $("chkStd").checked = state.show.std;
   $("chkMK").checked = state.show.mk;
+  $("chkHMean").checked = state.show.hmean;
+  $("chkHMin").checked = state.show.hmin;
+  $("chkHMax").checked = state.show.hmax;
+  if ($("selCompareBy")) $("selCompareBy").value = state.compareBy || "mun";
 
   $("selType").value = state.cmp.type;
   $("selCorr").value = state.cmp.corr;
-  $("chkNoOut").checked = state.cmp.noOut;
-
+  
   $("maxCompare").value = state.compareMax;
 
   // font
@@ -333,7 +342,7 @@ function initUI(){
     state = {
       mode:"view", mun:[], loc:[], v:"tmean_c", agg:"monthly", start:META.years[0], end:META.years[META.years.length-1],
       smooth:3, show:{mean:true,min:true,max:true,minmax:true,std:false,mk:true},
-      compareMax:5, cmp:{x:"precip_sum_mm", y:"tmean_c", type:"scatter", corr:"pearson", noOut:true}, font:110
+      compareMax:5, cmp:{x:"precip_sum_mm", y:"tmean_c", type:"scatter", corr:"pearson"}, font:110
     };
     setFont(state.font);
     initUI();
@@ -415,7 +424,8 @@ function toast(msg){
 function filteredRows(){
   let rows = RAW.slice();
   // municipality filter
-  if (state.mun.length){
+  const useMunFilter = !(state.mode==="compare" && (state.compareBy||"mun")==="loc");
+  if (useMunFilter && state.mun.length){
     const set = new Set(state.mun);
     rows = rows.filter(r => set.has(r.NM_MUN));
   }
@@ -441,6 +451,13 @@ function aggregateRows(rows){
     if (!byMun.has(m)) byMun.set(m, []);
     byMun.get(m).push(r);
   }
+  const byLoc = new Map();
+  for(const r of rows){
+    const L = r.LOCATION;
+    if (!byLoc.has(L)) byLoc.set(L, []);
+    byLoc.get(L).push(r);
+  }
+
 
   function groupTime(list){
     const map = new Map(); // key -> {x, sum, count}
@@ -493,13 +510,17 @@ function aggregateRows(rows){
       const sd = Math.sqrt(vals.reduce((a,v)=>a+(v-mean)*(v-mean),0)/vals.length);
       return {t:dt, mean, min, max, sd};
     }).filter(Boolean);
-    return {mode:"aggregate", points, perMun: series};
+    const locSeries=[];
+    for(const [L,list] of byLoc.entries()) locSeries.push({name:L, points: groupTime(list)});
+    return {mode:"aggregate", points, perMun: series, byLoc: locSeries};
   } else {
     const series = [];
     for(const [m,list] of byMun.entries()){
       series.push({name:m, points: groupTime(list)});
     }
-    return {mode: state.mode, series};
+    const locSeries=[];
+    for(const [L,list] of byLoc.entries()) locSeries.push({name:L, points: groupTime(list)});
+    return {mode: state.mode, series, byLoc: locSeries};
   }
 }
 
@@ -684,8 +705,10 @@ function renderTimeSeries(agg){
       });
     }
   } else {
-    // view/compare: one trace per municipality (smoothed series)
-    const series = agg.series.slice().sort((a,b)=>a.name.localeCompare(b.name,"pt-BR"));
+    // view/compare: one trace per group (município ou Planalto/Planície)
+    const useLoc = (state.mode==="compare" && (state.compareBy||"mun")==="loc");
+    const baseSeries = (useLoc ? (agg.byLoc||[]) : (agg.series||[]));
+    const series = baseSeries.slice().sort((a,b)=>a.name.localeCompare(b.name,"pt-BR"));
     const colors = ["#60a5fa","#34d399","#fbbf24","#fb7185","#a78bfa","#22c55e","#38bdf8","#f97316","#e879f9","#f43f5e","#84cc16","#06b6d4"];
 
     series.forEach((s,idx)=>{
@@ -731,6 +754,31 @@ function renderTimeSeries(agg){
         line:{width:3.6, color:"#9ca3af"},
         opacity:0.95
       });
+    }
+  }
+
+
+  // horizontal reference lines (global over selection)
+  if ((state.show.hmean || state.show.hmin || state.show.hmax) && traces.length){
+    // pick reference x-range from first trace that has x
+    const x0 = (traces.find(t=>Array.isArray(t.x) && t.x.length) || {}).x;
+    if (x0 && x0.length){
+      const xs = [x0[0], x0[x0.length-1]];
+      // collect y values from visible "data" traces
+      const ys = [];
+      traces.forEach(tr=>{
+        if (!Array.isArray(tr.y)) return;
+        tr.y.forEach(v=>{ if (Number.isFinite(v)) ys.push(v); });
+      });
+      if (ys.length){
+        const ymin = Math.min(...ys);
+        const ymax = Math.max(...ys);
+        const ymean = ys.reduce((a,b)=>a+b,0)/ys.length;
+        const addH = (y, name)=> traces.push({type:"scatter", x:xs, y:[y,y], mode:"lines", name, line:{width:1.5, dash:"dash"}, opacity:0.6});
+        if (state.show.hmean) addH(ymean, "média (série)");
+        if (state.show.hmin) addH(ymin, "mín (série)");
+        if (state.show.hmax) addH(ymax, "máx (série)");
+      }
     }
   }
 
@@ -784,45 +832,9 @@ function renderCompare(rows, agg){
     return;
   }
 
-  if (type==="box"){
-    // Boxplot by municipality (only makes sense in compare mode or when multiple muns selected)
-    const groups = state.mun.length ? state.mun : Array.from(new Set(rows.map(r=>r.NM_MUN))).slice(0, state.compareMax);
-    if (groups.length<2){
-      statsEl.textContent = "Boxplot: selecione 2+ municípios em “Municípios” (ou use modo Comparação).";
-      Plotly.react("cmpChart", [], layout, {displaylogo:false, responsive:true});
-      return;
-    }
-    const set = new Set(groups);
-    const by = new Map();
-    for(const r of rows){
-      if (!set.has(r.NM_MUN)) continue;
-      if (!by.has(r.NM_MUN)) by.set(r.NM_MUN, []);
-      const v = r[yk];
-      if (Number.isFinite(v)) by.get(r.NM_MUN).push(v);
-    }
-    const colors = ["#60a5fa","#34d399","#fbbf24","#fb7185","#a78bfa","#38bdf8","#f97316","#e879f9","#84cc16","#06b6d4","#f43f5e","#22c55e"];
-    let i=0;
-    for(const g of groups){
-      const vals = by.get(g) || [];
-      traces.push({
-        type:"box",
-        name: g,
-        y: vals,
-        boxpoints: state.cmp.noOut ? false : "outliers",
-        marker:{color: colors[i%colors.length]},
-        line:{width:1},
-        opacity:0.9
-      });
-      i++;
-    }
-    layout.title.text = "Boxplot por município";
-    layout.xaxis.title = "";
-    layout.yaxis.title = (VARS.find(v=>v.key===yk)?.label || yk);
-    layout.margin.l=80;
-    Plotly.react("cmpChart", traces, layout, {displaylogo:false, responsive:true});
-    statsEl.textContent = `Boxplot (${groups.length} municípios) · outliers: ${state.cmp.noOut? "ocultos":"mostrados"}`;
-    return;
-  }
+  if (type==="box"){ type="scatter"; }
+
+
 
   if (type==="corr"){
     // correlation matrix between selected vars
