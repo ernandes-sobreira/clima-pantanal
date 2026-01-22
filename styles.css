@@ -1,6 +1,5 @@
 
 :root{
-  --fsScale:1.2;
   --bg:#0b1220;
   --card:#0f1b33;
   --card2:#0b162c;
@@ -23,7 +22,6 @@ html,body{height:100%}
 body{
   margin:0;
   font-family:var(--sans);
-  font-size: calc(16px * var(--fsScale));
   background:
     radial-gradient(1200px 600px at 10% 0%, rgba(47,107,255,.25), transparent 60%),
     radial-gradient(900px 500px at 90% 10%, rgba(125,211,252,.18), transparent 55%),
@@ -198,8 +196,3 @@ kbd{
   transition: opacity .18s ease, transform .18s ease;
 }
 .toast.show{opacity:1; transform: translateX(-50%) translateY(-2px)}
-
-
-.fontctl{display:flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid var(--line); border-radius:999px; background:rgba(0,0,0,.18)}
-select.mini{background:rgba(0,0,0,.18); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:6px 10px; outline:none}
-select.mini:focus{border-color:rgba(125,211,252,.7)}

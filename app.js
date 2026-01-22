@@ -13,17 +13,6 @@ const toast = (msg) => {
   setTimeout(() => t.classList.remove("show"), 1600);
 };
 
-
-function setFontScale(pct){
-  const scale = Math.max(80, Math.min(150, Number(pct)||100)) / 100;
-  document.documentElement.style.setProperty('--fsScale', String(scale));
-}
-function getFontScale(){
-  const v = getComputedStyle(document.documentElement).getPropertyValue('--fsScale').trim();
-  const n = Number(v);
-  return Number.isFinite(n) && n>0 ? n : 1;
-}
-
 let RAW = [];
 let META = { years: [], muns: [], vars: [] };
 let SCOPE = "mun";
@@ -237,9 +226,6 @@ function getSelections(){
     minmax: el("chkMinMax").checked,
     std: el("chkStd").checked,
     mean: el("chkMeanLine").checked,
-    maxLine: el("chkMaxLine")?.checked || false,
-    minLine: el("chkMinLine")?.checked || false,
-    annotMK: el("chkAnnotMK")?.checked || false,
   };
   return { mun, loc, v, agg, start, end, smooth, bands };
 }
@@ -324,307 +310,177 @@ function summarize(y){
 
 /* ========= Charts ========= */
 
-
-function plotTimeSeries(seriesAgg, sel, varLabel, extra){
-  const scale = getFontScale();
-  const bands = sel.bands || {};
-  const groups = (extra && extra.groups) ? extra.groups : null;
-  const mk = (extra && extra.mk) ? extra.mk : null;
-  const sen = (extra && extra.sen) ? extra.sen : null;
-
-  const x = seriesAgg.map(d=>d.t);
-  let yMean = seriesAgg.map(d=>d.mean);
-  let yMin  = seriesAgg.map(d=>d.min);
-  let yMax  = seriesAgg.map(d=>d.max);
-
+function plotTimeSeries(series, sel, varLabel){
+  const x = series.map(d=>d.t);
+  let yMean = series.map(d=>d.mean);
   const k = sel.smooth === "none" ? 1 : parseInt(sel.smooth,10);
-  if (k>1){
-    yMean = movingAverage(yMean, k);
-    yMin  = movingAverage(yMin,  k);
-    yMax  = movingAverage(yMax,  k);
-  }
+  if (k>1) yMean = movingAverage(yMean, k);
 
   const traces = [];
   const layout = {
-    margin:{l:60,r:18,t:36,b:52},
+    margin:{l:50,r:18,t:30,b:45},
     paper_bgcolor:"rgba(0,0,0,0)",
     plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:"#e6edf7", size: Math.round(12*scale)},
-    xaxis:{title:"Tempo", gridcolor:"rgba(255,255,255,.07)", tickfont:{size:Math.round(11*scale)}, titlefont:{size:Math.round(12*scale)}},
-    yaxis:{title:varLabel, gridcolor:"rgba(255,255,255,.07)", tickfont:{size:Math.round(11*scale)}, titlefont:{size:Math.round(12*scale)}},
-    legend:{orientation:"h", y:1.18, font:{size:Math.round(11*scale)}},
-    annotations:[]
+    font:{color:"#e6edf7"},
+    xaxis:{title:"Tempo", gridcolor:"rgba(255,255,255,.07)"},
+    yaxis:{title:varLabel, gridcolor:"rgba(255,255,255,.07)"},
+    legend:{orientation:"h", y:1.15},
   };
 
-  // Individual lines (municipalities or locations)
-  if (groups && groups.length){
-    const maxLines = 12;
-    const show = groups.slice(0, maxLines);
-    if (groups.length > maxLines) toast(`Mostrando ${maxLines} séries individuais (de ${groups.length}).`);
-    for (const g of show){
-      const gx = g.series.map(d=>d.t);
-      let gy = g.series.map(d=>d.mean);
-      if (k>1) gy = movingAverage(gy, k);
-      traces.push({
-        x: gx, y: gy,
-        mode:"lines",
-        name: g.name,
-        line:{width:1.6},
-        opacity:0.65,
-        hovertemplate:`%{x|%Y-%m}: %{y:.2f}<extra>${g.name}</extra>`
-      });
-    }
+  // Bands
+  if (sel.bands.minmax){
+    traces.push({
+      x, y: series.map(d=>d.min),
+      mode:"lines",
+      name:"min",
+      line:{width:0},
+      hoverinfo:"skip",
+      showlegend:false
+    });
+    traces.push({
+      x, y: series.map(d=>d.max),
+      mode:"lines",
+      name:"min–max",
+      fill:"tonexty",
+      fillcolor:"rgba(125,211,252,.14)",
+      line:{width:0},
+      hovertemplate:"max: %{y:.2f}<extra></extra>"
+    });
+  }
+  if (sel.bands.std){
+    const yUp = series.map(d=>d.mean + d.sd);
+    const yLo = series.map(d=>d.mean - d.sd);
+    traces.push({
+      x, y: yLo,
+      mode:"lines",
+      name:"-1 sd",
+      line:{width:0},
+      hoverinfo:"skip",
+      showlegend:false
+    });
+    traces.push({
+      x, y: yUp,
+      mode:"lines",
+      name:"±1 sd",
+      fill:"tonexty",
+      fillcolor:"rgba(47,107,255,.14)",
+      line:{width:0},
+      hovertemplate:"+1 sd: %{y:.2f}<extra></extra>"
+    });
   }
 
-  // Bands (selection)
-  if (bands.minmax){
-    traces.push({ x, y:yMax, mode:"lines", line:{width:0.6}, showlegend:false, hoverinfo:"skip" });
-    traces.push({ x, y:yMin, mode:"lines", line:{width:0.6}, fill:"tonexty", fillcolor:"rgba(125,211,252,.12)", showlegend:false, hoverinfo:"skip" });
-  }
-
-  if (bands.std){
-    const ySd = seriesAgg.map(d=>d.sd);
-    let yU = yMean.map((v,i)=> (Number.isFinite(v)&&Number.isFinite(ySd[i])) ? v+ySd[i] : null);
-    let yL = yMean.map((v,i)=> (Number.isFinite(v)&&Number.isFinite(ySd[i])) ? v-ySd[i] : null);
-    if (k>1){
-      yU = movingAverage(yU, k);
-      yL = movingAverage(yL, k);
-    }
-    traces.push({ x, y:yU, mode:"lines", line:{width:0.6}, showlegend:false, hoverinfo:"skip" });
-    traces.push({ x, y:yL, mode:"lines", line:{width:0.6}, fill:"tonexty", fillcolor:"rgba(34,197,94,.10)", showlegend:false, hoverinfo:"skip" });
-  }
-
-  // Main selection line
-  traces.push({
-    x, y: yMean,
-    mode:"lines",
-    name: (SCOPE==="mun" && sel.mun.length===1) ? sel.mun[0] : "média (seleção)",
-    line:{width:3.2},
-    hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra></extra>"
-  });
-
-  // Optional selection lines
-  if (bands.maxLine){
-    traces.push({ x, y:yMax, mode:"lines", name:"linha máx (sel)", line:{width:2, dash:"dot"}, hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra>máx</extra>" });
-  }
-  if (bands.minLine){
-    traces.push({ x, y:yMin, mode:"lines", name:"linha mín (sel)", line:{width:2, dash:"dot"}, hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra>mín</extra>" });
-  }
-
-  // MK annotation
-  if (bands.annotMK && mk && mk.n>=8){
-    const ptxt = (mk.p < 0.001) ? "<0.001" : mk.p.toFixed(3);
-    const senTxt = (sen && Number.isFinite(sen)) ? ` · Sen=${sen.toFixed(4)}/ano` : "";
-    layout.annotations.push({
-      xref:"paper", yref:"paper",
-      x:0.01, y:1.12,
-      text:`MK: tau=${mk.tau.toFixed(2)} · p=${ptxt}${senTxt}`,
-      showarrow:false,
-      font:{size:Math.round(12*scale), color:"#e6edf7"},
-      bgcolor:"rgba(0,0,0,.25)",
-      bordercolor:"rgba(255,255,255,.10)",
-      borderwidth:1,
-      borderpad:6
+  // Mean line
+  if (sel.bands.mean){
+    traces.push({
+      x, y: yMean,
+      mode:"lines+markers",
+      name: (k>1 ? `média (MM${k})` : "média"),
+      line:{width:3},
+      marker:{size:5},
+      hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra></extra>"
+    });
+  } else {
+    traces.push({
+      x, y: yMean,
+      mode:"lines",
+      name:"série",
+      line:{width:3},
+      hovertemplate:"%{x|%Y-%m}: %{y:.2f}<extra></extra>"
     });
   }
 
   Plotly.newPlot("chartTS", traces, layout, {displayModeBar:true, responsive:true});
 }
 
-
-
 function plotCompare(sel, rows){
-  const scale = getFontScale();
   const xKey = el("selX").value;
   const yKey = el("selY").value;
   const cmpType = el("selCmp").value;
   const corrType = el("selCorr").value;
-  const noOut = el("chkNoOutliers")?.checked ?? true;
 
-  // BOX: compare municipalities (or locations) for current variable (sel.v)
-  if (cmpType === "box"){
-    const vKey = sel.v;
-    const vLab = VARS.find(v=>v.key===vKey)?.label || vKey;
-
-    let groupNames = [];
-    let field = "NM_MUN";
-    if (SCOPE === "loc"){
-      field = "LOCATION";
-      groupNames = sel.loc.length ? sel.loc.slice() : unique(rows.map(r=>r.LOCATION));
-    } else {
-      groupNames = sel.mun.length ? sel.mun.slice() : unique(rows.map(r=>r.NM_MUN));
-    }
-    groupNames = groupNames.filter(Boolean);
-
-    const traces = [];
-    for (const g of groupNames){
-      const sub = rows.filter(r => (r[field]===g));
-      const s = selectionSeries(sub, vKey, sel.agg);
-      const vals = s.map(d=>d.mean).filter(Number.isFinite);
-      if (!vals.length) continue;
-      traces.push({
-        type:"box",
-        name:g,
-        y: vals,
-        boxpoints: noOut ? false : "outliers",
-        jitter: 0,
-        hovertemplate:`${g}<br>%{y:.2f}<extra></extra>`
-      });
-    }
-
-    const layout = {
-      margin:{l:60,r:18,t:36,b:90},
-      paper_bgcolor:"rgba(0,0,0,0)",
-      plot_bgcolor:"rgba(0,0,0,0)",
-      font:{color:"#e6edf7", size:Math.round(12*scale)},
-      xaxis:{title:"Grupo", tickangle:-30, gridcolor:"rgba(255,255,255,.07)", tickfont:{size:Math.round(10*scale)}},
-      yaxis:{title:vLab, gridcolor:"rgba(255,255,255,.07)"},
-      showlegend:false
-    };
-
-    Plotly.newPlot("chartCMP", traces, layout, {displayModeBar:true, responsive:true});
-    el("boxCmpStats").innerHTML = `Boxplot de <b>${vLab}</b> (${sel.agg === "annual" ? "anual" : "mensal"}).`;
-    return;
-  }
-
-  // selection aggregate series
   const sX = selectionSeries(rows, xKey, sel.agg);
   const sY = selectionSeries(rows, yKey, sel.agg);
 
+  // align by time
   const mapY = new Map(sY.map(d => [d.t.getTime(), d.mean]));
-  const xsAgg=[], ysAgg=[];
+  const xs=[], ys=[], ts=[];
   for (const d of sX){
     const k = d.t.getTime();
-    const yv = mapY.get(k);
-    if (Number.isFinite(d.mean) && Number.isFinite(yv)){
-      xsAgg.push(d.mean); ysAgg.push(yv);
+    if (mapY.has(k)){
+      xs.push(d.mean);
+      ys.push(mapY.get(k));
+      ts.push(d.t);
     }
   }
 
-  const traces = [];
-  let xsAll=[], ysAll=[];
-  const manyMun = (SCOPE==="mun" && sel.mun.length>1);
-
-  if (cmpType === "scatter" && manyMun){
-    for (const m of sel.mun){
-      const sub = rows.filter(r=>r.NM_MUN===m);
-      const mx = selectionSeries(sub, xKey, sel.agg);
-      const my = selectionSeries(sub, yKey, sel.agg);
-      const myMap = new Map(my.map(d=>[d.t.getTime(), d.mean]));
-      const xs=[], ys=[];
-      for (const d of mx){
-        const k=d.t.getTime();
-        const yv=myMap.get(k);
-        if (Number.isFinite(d.mean) && Number.isFinite(yv)){
-          xs.push(d.mean); ys.push(yv);
-          xsAll.push(d.mean); ysAll.push(yv);
-        }
-      }
-      if (xs.length){
-        traces.push({
-          x: xs, y: ys,
-          mode:"markers",
-          type:"scatter",
-          name: m,
-          marker:{size:7, opacity:0.75},
-          hovertemplate:`${m}<br>${VARS.find(v=>v.key===xKey)?.label||xKey}: %{x:.2f}<br>${VARS.find(v=>v.key===yKey)?.label||yKey}: %{y:.2f}<extra></extra>`
-        });
-      }
-    }
-  } else {
-    xsAll = xsAgg.slice(); ysAll = ysAgg.slice();
-    traces.push({
-      x: xsAgg, y: ysAgg,
-      mode:"markers",
-      type:"scatter",
-      name:"pontos",
-      marker:{size:8, opacity:0.75},
-      hovertemplate:`${VARS.find(v=>v.key===xKey)?.label||xKey}: %{x:.2f}<br>${VARS.find(v=>v.key===yKey)?.label||yKey}: %{y:.2f}<extra></extra>`
-    });
-  }
-
-  const xLab = VARS.find(v=>v.key===xKey)?.label || xKey;
-  const yLab = VARS.find(v=>v.key===yKey)?.label || yKey;
+  const corr = (corrType==="spearman") ? spearman(xs,ys) : pearson(xs,ys);
+  const reg = linReg(xs,ys);
 
   if (cmpType === "corr"){
-    const keys = unique([xKey, yKey, sel.v]);
-    const seriesMap = new Map();
-    for (const k of keys) seriesMap.set(k, selectionSeries(rows, k, sel.agg));
-
-    const tset = new Set(seriesMap.get(keys[0]).map(d=>d.t.getTime()));
-    for (const k of keys.slice(1)){
-      const tt = new Set(seriesMap.get(k).map(d=>d.t.getTime()));
-      for (const t of Array.from(tset)) if (!tt.has(t)) tset.delete(t);
+    // Correlation matrix among all VARS using aligned data
+    const keys = VARS.map(v=>v.key);
+    const label = (k)=> (VARS.find(v=>v.key===k)?.label || k);
+    const baseSeries = {};
+    // create time index via first key
+    const base = selectionSeries(rows, keys[0], sel.agg);
+    const time = base.map(d=>d.t.getTime());
+    for (const k of keys){
+      const s = selectionSeries(rows, k, sel.agg);
+      const m = new Map(s.map(d => [d.t.getTime(), d.mean]));
+      baseSeries[k] = time.map(ti => m.has(ti) ? m.get(ti) : NaN);
     }
-    const times = Array.from(tset).sort((a,b)=>a-b);
-
-    const aligned = keys.map(k=>{
-      const map = new Map(seriesMap.get(k).map(d=>[d.t.getTime(), d.mean]));
-      return times.map(t=>map.get(t));
-    });
-
-    const z=[];
-    for (let i=0;i<keys.length;i++){
-      const row=[];
-      for (let j=0;j<keys.length;j++){
-        const a = aligned[i].filter(Number.isFinite);
-        const b = aligned[j].filter(Number.isFinite);
-        const r = (corrType==="spearman") ? spearman(a, b).r : pearson(a, b).r;
-        row.push(r);
+    // matrix
+    const z = [];
+    for (const ky of keys){
+      const row = [];
+      for (const kx of keys){
+        const c = (corrType==="spearman") ? spearman(baseSeries[kx], baseSeries[ky]) : pearson(baseSeries[kx], baseSeries[ky]);
+        row.push(c.r);
       }
       z.push(row);
     }
-
     Plotly.newPlot("chartCMP", [{
       type:"heatmap",
       z,
-      x: keys.map(k=>VARS.find(v=>v.key===k)?.label||k),
-      y: keys.map(k=>VARS.find(v=>v.key===k)?.label||k),
-      zmin:-1, zmax:1,
-      hovertemplate:"%{y}<br>%{x}<br>r=%{z:.2f}<extra></extra>"
+      x: keys.map(label),
+      y: keys.map(label),
+      hovertemplate:"%{x}<br>%{y}<br>corr=%{z:.2f}<extra></extra>"
     }], {
-      margin:{l:140,r:18,t:36,b:140},
+      margin:{l:180,r:20,t:40,b:120},
       paper_bgcolor:"rgba(0,0,0,0)",
       plot_bgcolor:"rgba(0,0,0,0)",
-      font:{color:"#e6edf7", size:Math.round(12*scale)},
+      font:{color:"#e6edf7"},
+      title:{text:`Matriz de correlação (${corrType})`, font:{size:14}},
     }, {displayModeBar:true, responsive:true});
 
-    el("boxCmpStats").innerHTML = `Matriz (${corrType}) alinhada no tempo (variáveis: <b>${keys.length}</b>).`;
+    el("boxCmpStats").innerHTML = `n (tempo alinhado): <b>${time.length}</b>`;
     return;
   }
 
-  // stats on combined points
-  const corr = (corrType === "spearman") ? spearman(xsAll, ysAll) : pearson(xsAll, ysAll);
-  const reg  = linReg(xsAll, ysAll);
+  // Scatter
+  const xLab = VARS.find(v=>v.key===xKey)?.label || xKey;
+  const yLab = VARS.find(v=>v.key===yKey)?.label || yKey;
 
-  // regression line
-  const xmin = Math.min(...xsAll), xmax = Math.max(...xsAll);
-  const lineX = [xmin, xmax];
-  const lineY = lineX.map(xx=>reg.intercept + reg.slope*xx);
-  traces.push({
-    x: lineX, y: lineY,
-    mode:"lines",
-    name:"regressão",
-    line:{width:2.5},
-    hoverinfo:"skip",
-    showlegend:true
-  });
-
-  Plotly.newPlot("chartCMP", traces, {
-    margin:{l:60,r:18,t:36,b:52},
+  Plotly.newPlot("chartCMP", [{
+    type:"scatter",
+    mode:"markers",
+    x: xs, y: ys,
+    text: ts.map(d => d.toISOString().slice(0,7)),
+    hovertemplate:"%{text}<br>x=%{x:.2f}<br>y=%{y:.2f}<extra></extra>",
+    marker:{size:8, opacity:0.8}
+  }], {
+    margin:{l:55,r:18,t:30,b:55},
     paper_bgcolor:"rgba(0,0,0,0)",
     plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:"#e6edf7", size:Math.round(12*scale)},
+    font:{color:"#e6edf7"},
     xaxis:{title:xLab, gridcolor:"rgba(255,255,255,.07)"},
     yaxis:{title:yLab, gridcolor:"rgba(255,255,255,.07)"},
-    legend:{orientation:"h", y:1.18, font:{size:Math.round(11*scale)}},
   }, {displayModeBar:true, responsive:true});
 
   el("boxCmpStats").innerHTML =
 `Correlação (${corrType}): <b>${fmt(corr.r,3)}</b>  (n=${corr.n})<br>
 Regressão: y = <b>${fmt(reg.intercept,3)}</b> + <b>${fmt(reg.slope,3)}</b>x  ·  R²=<b>${fmt(reg.r2,3)}</b>  (n=${reg.n})`;
 }
-
 
 /* ========= UI: state, URL sharing ========= */
 
@@ -711,62 +567,48 @@ function resetUI(){
 
 /* ========= Main update ========= */
 
-
 function updateAll(){
   const sel = getSelections();
   const rows = filterRaw(sel);
+  const series = selectionSeries(rows, sel.v, sel.agg);
 
   const varLabel = VARS.find(v=>v.key===sel.v)?.label || sel.v;
+  plotTimeSeries(series, sel, varLabel);
 
-  const seriesAgg = selectionSeries(rows, sel.v, sel.agg);
-
-  // individual series
-  let groups = [];
-  if (SCOPE === "mun" && sel.mun.length > 1){
-    for (const m of sel.mun){
-      const sub = rows.filter(r=>r.NM_MUN===m);
-      groups.push({ name:m, series: selectionSeries(sub, sel.v, sel.agg) });
-    }
-  } else if (SCOPE === "loc" && sel.loc.length > 1){
-    for (const loc of sel.loc){
-      const sub = rows.filter(r=>r.LOCATION===loc);
-      groups.push({ name:loc, series: selectionSeries(sub, sel.v, sel.agg) });
-    }
-  }
-
-  const y = seriesAgg.map(d=>d.mean);
+  // summary + trend on mean series
+  const y = series.map(d=>d.mean);
   const sum = summarize(y);
-
-  let mk = null;
-  let slopeSen = null;
-
   if (!sum){
     el("boxSummary").textContent = "Sem dados para este recorte.";
     el("boxTrend").textContent = "—";
   } else {
     el("boxSummary").innerHTML =
 `n: <b>${sum.n}</b><br>
-média: <b>${fmt(sum.mean,2)}</b> · mediana: <b>${fmt(sum.median,2)}</b> · sd: <b>${fmt(sum.sd,2)}</b><br>
-min: <b>${fmt(sum.min,2)}</b> · p25: <b>${fmt(sum.p25,2)}</b> · p75: <b>${fmt(sum.p75,2)}</b> · max: <b>${fmt(sum.max,2)}</b>`;
-
-    mk = mannKendall(y);
-    slopeSen = senSlope(seriesAgg.map(d=>d.year), y);
-    const reg = linReg(seriesAgg.map(d=>d.year), y);
-
+média: <b>${fmt(sum.mean,2)}</b> · mediana: <b>${fmt(sum.med,2)}</b> · sd: <b>${fmt(sum.sd,2)}</b><br>
+min: <b>${fmt(sum.min,2)}</b> · p05: <b>${fmt(sum.p05,2)}</b> · p95: <b>${fmt(sum.p95,2)}</b> · max: <b>${fmt(sum.max,2)}</b>`;
+    // Trend test (time in years)
+    const t = series.map(d => {
+      const dt = d.t;
+      // decimal year
+      return dt.getUTCFullYear() + (dt.getUTCMonth()/12);
+    });
+    const mk = mannKendall(y);
+    const slopeSen = senSlope(t, y);
+    // linear regression y ~ t
+    const reg = linReg(t, y);
     el("boxTrend").innerHTML =
 `Mann–Kendall: tau=<b>${fmt(mk.tau,3)}</b> · z=<b>${fmt(mk.z,3)}</b> · p=<b>${fmt(mk.p,4)}</b> (n=${mk.n})<br>
 Inclinação de Sen: <b>${fmt(slopeSen,4)}</b> por ano<br>
 Regressão linear: slope=<b>${fmt(reg.slope,4)}</b> por ano · R²=<b>${fmt(reg.r2,3)}</b> (n=${reg.n})`;
   }
 
-  plotTimeSeries(seriesAgg, sel, varLabel, { groups, mk, sen: slopeSen });
-
+  // compare panel
   plotCompare(sel, rows);
 
+  // update URL
   const qs = toQuery(sel);
   history.replaceState({}, "", `${location.pathname}?${qs}`);
 }
-
 
 function exportFiltered(){
   const sel = getSelections();
@@ -810,7 +652,7 @@ function initUI(){
   el("btnShare").addEventListener("click", shareLink);
 
   // reactive update for key controls (lightweight)
-  ["selVar","selAgg","selStart","selEnd","selSmooth","chkMinMax","chkStd","chkMeanLine","chkMaxLine","chkMinLine","chkAnnotMK","selX","selY","selCmp","selCorr","chkNoOutliers","selMun","selLoc","selFont"]
+  ["selVar","selAgg","selStart","selEnd","selSmooth","chkMinMax","chkStd","chkMeanLine","selX","selY","selCmp","selCorr","selMun","selLoc"]
     .forEach(id => el(id).addEventListener("change", ()=> updateAll()));
 }
 
@@ -841,9 +683,6 @@ function hydrateControls(){
     const oy=document.createElement("option"); oy.value=v.key; oy.textContent=v.label;
     xSel.appendChild(ox); ySel.appendChild(oy);
   }
-
-  // default font (also controlled by selector)
-  if (el("selFont")) setFontScale(el("selFont").value);
 }
 
 async function loadData(){
