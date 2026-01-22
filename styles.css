@@ -196,3 +196,21 @@ kbd{
   transition: opacity .18s ease, transform .18s ease;
 }
 .toast.show{opacity:1; transform: translateX(-50%) translateY(-2px)}
+.about-section {
+  max-width: 900px;
+  margin: 60px auto 40px;
+  padding: 20px 30px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 12px;
+}
+
+.about-section h2 {
+  margin-bottom: 12px;
+}
+
+.about-text {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: #e5e7eb;
+}
+
